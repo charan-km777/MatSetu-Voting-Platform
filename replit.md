@@ -1,45 +1,59 @@
-# [Project name]
+# MatSetu Voting
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+MatSetu is an institutional voting operations workspace for election readiness, biometric voter verification, and local blockchain auditability.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server
+- `pnpm --filter @workspace/matsetu run dev` — run the React client
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `docker compose up --build` — run the web client, API, MongoDB, and Hardhat services together
+- `pnpm --filter @workspace/api-server run typecheck` — check backend changes
+- `pnpm --filter @workspace/matsetu run typecheck` — check frontend changes
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- pnpm workspaces, Node.js 22-compatible container runtime, TypeScript 5.9
+- API: Express 5 with generated Zod validation
+- Frontend: React + Vite + TanStack Query
+- Ledger: Hardhat 2.22-compatible local EVM configuration and Solidity 0.8.20 contract
+- Container suite: Docker Compose with MongoDB volume, API, web client, and Hardhat node
+- API codegen: Orval from the OpenAPI spec
+- Build: esbuild (API bundle) and Vite (client)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `lib/api-spec/openapi.yaml` — source of truth for dashboard, elections, voter, ledger, and activity contracts
+- `artifacts/api-server/src/routes/matsetu.ts` — API endpoints and biometric distance gate
+- `artifacts/api-server/src/matsetu-store.ts` — deterministic Phase 1 preview records and descriptor fixtures
+- `artifacts/matsetu/src/App.tsx` — operator-facing routes and UI flows
+- `contracts/Election.sol` — candidate, voter, and vote-counting contract logic
+- `docker-compose.yml` — `voting_net` service topology and persistent `mongo_data` volume
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The initial preview keeps deterministic records in the API process so the Replit preview works without a local MongoDB daemon; Docker Compose provisions the MongoDB volume for the containerized path.
+- Biometric registration accepts exactly 128 values and blocks a closest Euclidean match below `0.45`, while never returning stored descriptors to clients.
+- The ledger status is exposed as a separate API surface so a future Hardhat RPC health check can replace the Phase 1 local status without changing the UI contract.
+- Contract and wallet casting are intentionally kept separate from identity records so voter-facing authorization can evolve without exposing biometric data on-chain.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Operators can review election readiness, inspect the voter registry, register and verify 128-dimensional descriptors, create draft elections, inspect local Hardhat status, and review recent audit activity. The supplied Compose stack adds the MongoDB persistence volume and Hardhat node required for a containerized deployment path.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+No additional user preferences recorded.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Run API codegen after every OpenAPI change before using generated hooks or Zod schemas.
+- The web artifact requires workflow-provided `PORT` and `BASE_PATH`; use the managed workflow instead of running Vite directly without them.
+- The preview store resets when the API process restarts; use `docker compose up --build` when testing the containerized MongoDB persistence path.
 
 ## Pointers
 
 - See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- See `docker-compose.yml` for the containerized Phase 1 topology

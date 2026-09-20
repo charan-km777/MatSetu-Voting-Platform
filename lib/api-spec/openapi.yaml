@@ -3,20 +3,23 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: MatSetu voting platform API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: dashboard
+  - name: elections
+  - name: voters
+  - name: ledger
+  - name: activity
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +27,329 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get the election operations summary
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+  /elections:
+    get:
+      operationId: getElections
+      tags: [elections]
+      summary: List elections
+      responses:
+        "200":
+          description: Elections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Election"
+    post:
+      operationId: createElection
+      tags: [elections]
+      summary: Create an election
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ElectionInput"
+      responses:
+        "201":
+          description: Created election
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Election"
+        "400":
+          description: Invalid election
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /elections/{id}:
+    get:
+      operationId: getElection
+      tags: [elections]
+      summary: Get an election
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Election
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Election"
+        "404":
+          description: Election not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /voters:
+    get:
+      operationId: getVoters
+      tags: [voters]
+      summary: List registered voters
+      responses:
+        "200":
+          description: Voters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Voter"
+  /voters/register:
+    post:
+      operationId: registerVoter
+      tags: [voters]
+      summary: Register a voter with a biometric descriptor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoterRegistrationInput"
+      responses:
+        "201":
+          description: Registered voter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Voter"
+        "409":
+          description: Duplicate biometric match
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /voters/{id}/verify:
+    post:
+      operationId: verifyVoter
+      tags: [voters]
+      summary: Verify a voter against a stored descriptor
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BiometricVerificationInput"
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationResult"
+        "404":
+          description: Voter not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /ledger/status:
+    get:
+      operationId: getLedgerStatus
+      tags: [ledger]
+      summary: Get local ledger status
+      responses:
+        "200":
+          description: Ledger status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LedgerStatus"
+  /activity:
+    get:
+      operationId: getActivity
+      tags: [activity]
+      summary: Get recent system activity
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Activity"
 components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
   schemas:
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
     HealthStatus:
       type: object
+      required: [status, services]
       properties:
         status:
           type: string
-      required:
-        - status
-
+        services:
+          type: array
+          items:
+            type: string
+    DashboardSummary:
+      type: object
+      required: [activeVoters, activeElections, verifiedTransactions, duplicateAttempts, systemStatus]
+      properties:
+        activeVoters:
+          type: integer
+        activeElections:
+          type: integer
+        verifiedTransactions:
+          type: integer
+        duplicateAttempts:
+          type: integer
+        systemStatus:
+          type: string
+          enum: [operational, attention, offline]
+    Election:
+      type: object
+      required: [id, title, status, candidateCount, voterCount, startAt, endAt, contractAddress]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [draft, scheduled, live, closed]
+        candidateCount:
+          type: integer
+        voterCount:
+          type: integer
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        contractAddress:
+          type: string
+    ElectionInput:
+      type: object
+      required: [title, startAt, endAt]
+      properties:
+        title:
+          type: string
+          minLength: 3
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+    Voter:
+      type: object
+      required: [id, displayName, identifier, status, registeredAt, lastVerifiedAt]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        identifier:
+          type: string
+        status:
+          type: string
+          enum: [verified, pending, flagged]
+        registeredAt:
+          type: string
+          format: date-time
+        lastVerifiedAt:
+          type: string
+          format: date-time
+    VoterRegistrationInput:
+      type: object
+      required: [displayName, identifier, descriptor]
+      properties:
+        displayName:
+          type: string
+          minLength: 2
+        identifier:
+          type: string
+          minLength: 2
+        descriptor:
+          type: array
+          minItems: 128
+          maxItems: 128
+          items:
+            type: number
+    BiometricVerificationInput:
+      type: object
+      required: [descriptor]
+      properties:
+        descriptor:
+          type: array
+          minItems: 128
+          maxItems: 128
+          items:
+            type: number
+    VerificationResult:
+      type: object
+      required: [verified, distance, threshold]
+      properties:
+        verified:
+          type: boolean
+        distance:
+          type: number
+        threshold:
+          type: number
+        message:
+          type: string
+    LedgerStatus:
+      type: object
+      required: [network, blockNumber, latencyMs, contractStatus, rpcUrl]
+      properties:
+        network:
+          type: string
+        blockNumber:
+          type: integer
+        latencyMs:
+          type: integer
+        contractStatus:
+          type: string
+          enum: [deployed, compiling, unavailable]
+        rpcUrl:
+          type: string
+    Activity:
+      type: object
+      required: [id, type, label, detail, timestamp, status]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [registration, verification, ledger, election]
+        label:
+          type: string
+        detail:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [success, pending, warning]

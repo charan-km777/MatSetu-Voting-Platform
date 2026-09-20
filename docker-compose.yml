@@ -1,0 +1,51 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: containers/web.Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - voting_net
+
+  api:
+    build:
+      context: .
+      dockerfile: containers/api.Dockerfile
+    environment:
+      PORT: 5000
+      MONGODB_URI: mongodb://mongo:27017/matsetu
+      HARDHAT_RPC_URL: http://hardhat:8545
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongo
+      - hardhat
+    networks:
+      - voting_net
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - voting_net
+
+  hardhat:
+    build:
+      context: .
+      dockerfile: containers/hardhat.Dockerfile
+    ports:
+      - "8545:8545"
+    networks:
+      - voting_net
+
+networks:
+  voting_net:
+    driver: bridge
+
+volumes:
+  mongo_data:

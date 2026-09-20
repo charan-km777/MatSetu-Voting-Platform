@@ -1,0 +1,1 @@
+- [MatSetu infrastructure seams](matsetu-infrastructure.md) — keep identity data off-chain and make local infrastructure status replaceable through stable API contracts.
