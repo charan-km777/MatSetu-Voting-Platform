@@ -1,0 +1,29 @@
+kind = "video"
+previewPath = "/matsetu-explainer/"
+title = "MatSetu Explainer"
+description = "A short animated explainer for MatSetu, showing how biometric deduplication, containerized services, and a local Hardhat ledger support trusted institutional elections."
+version = "1.0.0"
+id = "artifacts/matsetu-explainer"
+router = "path"
+videoAspectRatio = "16:9"
+
+[[services]]
+name = "web"
+paths = [ "/matsetu-explainer/" ]
+localPort = 25856
+
+[services.development]
+run = "pnpm --filter @workspace/matsetu-explainer run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/matsetu-explainer", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/matsetu-explainer/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25856"
+BASE_PATH = "/matsetu-explainer/"
