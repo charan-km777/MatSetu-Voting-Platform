@@ -1,10 +1,10 @@
-import { type FormEvent, type ReactNode, useMemo, useState } from 'react';
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Link, Route, Switch, useLocation, useRoute } from 'wouter';
 import {
-  Activity as ActivityIcon, ArrowLeft, ArrowUpRight, Blocks, Check, CheckCircle2, ChevronRight,
-  CircleAlert, Clock3, Copy, Database, Fingerprint, Gauge, Inbox, LayoutDashboard, Menu,
-  Network, Plus, RefreshCw, Search, ShieldCheck, UserRound, UsersRound, Vote, X, XCircle,
+  Activity as ActivityIcon, ArrowLeft, ArrowUpRight, Blocks, Camera, Check, CheckCircle2, ChevronRight,
+  CircleAlert, Clock3, Copy, Database, Fingerprint, Gauge, Inbox, LayoutDashboard, LoaderCircle, Menu,
+  Network, Plus, RefreshCw, Search, ShieldCheck, UserRound, UsersRound, Video, Vote, X, XCircle,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -25,6 +25,44 @@ const queryClient = new QueryClient();
 const formatDate = (value?: string) => value ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(value)) : 'Not recorded';
 const formatTime = (value?: string) => value ? new Intl.DateTimeFormat('en', { hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—';
 const initials = (name: string) => name.split(' ').map((part) => part[0]).slice(0, 2).join('').toUpperCase();
+
+const FACE_API_SCRIPT = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js';
+const FACE_API_MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+
+type FaceApi = {
+  nets: {
+    tinyFaceDetector: { loadFromUri: (uri: string) => Promise<void> };
+    faceLandmark68Net: { loadFromUri: (uri: string) => Promise<void> };
+    faceRecognitionNet: { loadFromUri: (uri: string) => Promise<void> };
+  };
+  TinyFaceDetectorOptions: new (options?: { inputSize?: number; scoreThreshold?: number }) => unknown;
+  detectSingleFace: (input: HTMLVideoElement, options: unknown) => {
+    withFaceLandmarks: () => { withFaceDescriptor: () => Promise<{ descriptor: Float32Array } | undefined> };
+  };
+};
+
+declare global {
+  interface Window {
+    faceapi?: FaceApi;
+  }
+}
+
+let faceApiPromise: Promise<FaceApi> | undefined;
+const loadFaceApi = () => {
+  if (window.faceapi) return Promise.resolve(window.faceapi);
+  if (!faceApiPromise) {
+    faceApiPromise = new Promise<FaceApi>((resolve, reject) => {
+      const existing = document.querySelector<HTMLScriptElement>(`script[src="${FACE_API_SCRIPT}"]`);
+      const script = existing ?? document.createElement('script');
+      script.src = FACE_API_SCRIPT;
+      script.async = true;
+      script.onload = () => window.faceapi ? resolve(window.faceapi) : (() => { faceApiPromise = undefined; reject(new Error('Face model library was unavailable.')); })();
+      script.onerror = () => { faceApiPromise = undefined; reject(new Error('Face model library could not be loaded.')); };
+      if (!existing) document.head.appendChild(script);
+    });
+  }
+  return faceApiPromise;
+};
 
 function StatusPill({ value, tone }: { value: string; tone?: 'green' | 'amber' | 'red' | 'blue' }) {
   const inferred = tone ?? (['live', 'verified', 'success', 'deployed', 'operational'].includes(value) ? 'green' : ['pending', 'scheduled', 'compiling', 'warning', 'attention'].includes(value) ? 'amber' : ['flagged', 'offline', 'unavailable'].includes(value) ? 'red' : 'blue');
@@ -169,20 +207,109 @@ function RegisterModal({ close }: { close: () => void }) {
   const client = useQueryClient();
   const [displayName, setDisplayName] = useState('');
   const [identifier, setIdentifier] = useState('');
-  const [descriptor, setDescriptor] = useState('');
-  const submit = (event: FormEvent) => { event.preventDefault(); const values = descriptor.split(/[\s,]+/).filter(Boolean).map(Number); if (values.length !== 128 || values.some((value) => Number.isNaN(value))) return; register.mutate({ data: { displayName: displayName.trim(), identifier: identifier.trim(), descriptor: values } }, { onSuccess: () => { client.invalidateQueries({ queryKey: getGetVotersQueryKey() }); close(); } }); };
-  const count = descriptor.split(/[\s,]+/).filter(Boolean).length;
-  return <Modal title="Register a voter" close={close}><form onSubmit={submit} className="space-y-5"><Field label="Display name"><input required minLength={2} data-testid="input-voter-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Full institutional name" /></Field><Field label="Identifier"><input required minLength={2} data-testid="input-voter-identifier" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="Student or employee ID" /></Field><Field label={`Biometric descriptor · ${count}/128 values`} hint="The capture device should provide 128 numeric values. Paste them separated by spaces or commas."><textarea required data-testid="input-voter-descriptor" value={descriptor} onChange={(e) => setDescriptor(e.target.value)} rows={4} placeholder="Descriptor unavailable until capture device is connected" /></Field>{count !== 128 && <p className="text-xs text-[#91601d]">Registration requires exactly 128 descriptor values.</p>}{register.isError && <InlineError message="Registration was not accepted by the service." />}<button disabled={register.isPending || count !== 128} data-testid="button-submit-voter" className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.12em] text-primary-foreground disabled:opacity-50">{register.isPending ? 'Registering…' : 'Register voter'} <ShieldCheck size={15} /></button></form></Modal>;
+  const [descriptor, setDescriptor] = useState<number[] | null>(null);
+  const submit = (event: FormEvent) => { event.preventDefault(); if (!descriptor) return; register.mutate({ data: { displayName: displayName.trim(), identifier: identifier.trim(), descriptor } }, { onSuccess: () => { client.invalidateQueries({ queryKey: getGetVotersQueryKey() }); close(); } }); };
+  return <Modal title="Register a voter" close={close}><form onSubmit={submit} className="space-y-5"><Field label="Display name"><input required minLength={2} data-testid="input-voter-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Full institutional name" /></Field><Field label="Identifier"><input required minLength={2} data-testid="input-voter-identifier" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="Student or employee ID" /></Field><FaceCapture onCaptured={setDescriptor} purpose="registration" />{register.isError && <InlineError message="Registration was not accepted by the service." />}<button disabled={register.isPending || !descriptor} data-testid="button-submit-voter" className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.12em] text-primary-foreground disabled:opacity-50">{register.isPending ? 'Registering…' : 'Register voter'} <ShieldCheck size={15} /></button></form></Modal>;
 }
 
 function VerifyModal({ voter, close }: { voter: Voter; close: () => void }) {
   const verify = useVerifyVoter();
-  const [descriptor, setDescriptor] = useState('');
+  const [descriptor, setDescriptor] = useState<number[] | null>(null);
   const [result, setResult] = useState<{ verified: boolean; distance: number; threshold: number; message?: string } | null>(null);
-  const submit = (event: FormEvent) => { event.preventDefault(); const values = descriptor.split(/[\s,]+/).filter(Boolean).map(Number); if (values.length !== 128 || values.some((value) => Number.isNaN(value))) return; verify.mutate({ id: voter.id, data: { descriptor: values } }, { onSuccess: (data) => setResult(data) }); };
-  const count = descriptor.split(/[\s,]+/).filter(Boolean).length;
-  return <Modal title={`Verify ${voter.displayName}`} close={close}><div className="mb-5 flex items-center gap-3 rounded-xl bg-secondary p-3"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-card font-mono text-[10px] font-bold text-primary">{initials(voter.displayName)}</span><div><div className="text-sm font-semibold">{voter.displayName}</div><div className="font-mono text-[9px] text-muted-foreground">{voter.identifier}</div></div></div>{result ? <div className={`rounded-2xl p-5 text-center ${result.verified ? 'bg-[#e8f3eb] text-[#236448]' : 'bg-[#fff0ed] text-[#a43b32]'}`}>{result.verified ? <CheckCircle2 className="mx-auto" size={30} /> : <XCircle className="mx-auto" size={30} />}<h3 className="mt-3 font-display text-xl font-semibold">{result.verified ? 'Identity verified' : 'Verification did not match'}</h3><p className="mt-2 text-xs opacity-80">{result.message ?? `Distance ${result.distance} · threshold ${result.threshold}`}</p><button type="button" data-testid="button-close-verification-result" onClick={close} className="mt-5 rounded-lg bg-current/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.1em]">Done</button></div> : <form onSubmit={submit} className="space-y-5"><Field label={`Live descriptor · ${count}/128 values`} hint="Use the connected verification device output for this voter."><textarea required data-testid="input-verification-descriptor" value={descriptor} onChange={(e) => setDescriptor(e.target.value)} rows={5} placeholder="Descriptor unavailable until capture device is connected" /></Field>{count !== 128 && <p className="text-xs text-[#91601d]">Verification requires exactly 128 descriptor values.</p>}{verify.isError && <InlineError message="The verification service did not respond." />}<button disabled={verify.isPending || count !== 128} data-testid="button-submit-verification" className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.12em] text-primary-foreground disabled:opacity-50">{verify.isPending ? 'Comparing descriptor…' : 'Run verification'} <Fingerprint size={15} /></button></form>}</Modal>;
+  const submit = (event: FormEvent) => { event.preventDefault(); if (!descriptor) return; verify.mutate({ id: voter.id, data: { descriptor } }, { onSuccess: (data) => setResult(data) }); };
+  return <Modal title={`Verify ${voter.displayName}`} close={close}><div className="mb-5 flex items-center gap-3 rounded-xl bg-secondary p-3"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-card font-mono text-[10px] font-bold text-primary">{initials(voter.displayName)}</span><div><div className="text-sm font-semibold">{voter.displayName}</div><div className="font-mono text-[9px] text-muted-foreground">{voter.identifier}</div></div></div>{result ? <div className={`rounded-2xl p-5 text-center ${result.verified ? 'bg-[#e8f3eb] text-[#236448]' : 'bg-[#fff0ed] text-[#a43b32]'}`}>{result.verified ? <CheckCircle2 className="mx-auto" size={30} /> : <XCircle className="mx-auto" size={30} />}<h3 className="mt-3 font-display text-xl font-semibold">{result.verified ? 'Identity verified' : 'Verification did not match'}</h3><p className="mt-2 text-xs opacity-80">{result.message ?? `Distance ${result.distance} · threshold ${result.threshold}`}</p><button type="button" data-testid="button-close-verification-result" onClick={close} className="mt-5 rounded-lg bg-current/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.1em]">Done</button></div> : <form onSubmit={submit} className="space-y-5"><FaceCapture onCaptured={setDescriptor} purpose="verification" />{verify.isError && <InlineError message="The verification service did not respond." />}<button disabled={verify.isPending || !descriptor} data-testid="button-submit-verification" className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.12em] text-primary-foreground disabled:opacity-50">{verify.isPending ? 'Comparing face…' : 'Run verification'} <Fingerprint size={15} /></button></form>}</Modal>;
 }
+
+function FaceCapture({ onCaptured, purpose }: { onCaptured: (descriptor: number[]) => void; purpose: 'registration' | 'verification' }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [permission, setPermission] = useState<'idle' | 'requesting' | 'granted' | 'denied'>('idle');
+  const [models, setModels] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [capture, setCapture] = useState<'idle' | 'capturing' | 'success' | 'error'>('idle');
+  const [error, setError] = useState('');
+
+  const stopCamera = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, []);
+
+  useEffect(() => stopCamera, [stopCamera]);
+
+  const startCamera = async () => {
+    setError('');
+    setPermission('requesting');
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setPermission('denied');
+      setError('This browser does not support camera access.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setPermission('granted');
+      setModels('loading');
+      const api = await loadFaceApi();
+      await Promise.all([
+        api.nets.tinyFaceDetector.loadFromUri(FACE_API_MODEL_URL),
+        api.nets.faceLandmark68Net.loadFromUri(FACE_API_MODEL_URL),
+        api.nets.faceRecognitionNet.loadFromUri(FACE_API_MODEL_URL),
+      ]);
+      setModels('ready');
+    } catch (cause) {
+      stopCamera();
+      if (cause instanceof DOMException && cause.name === 'NotAllowedError') {
+        setPermission('denied');
+        setModels('idle');
+        setError('Camera permission was denied. Allow camera access and try again.');
+      } else {
+        setPermission('granted');
+        setModels('error');
+        setError('Camera or face models could not be started. Check your connection and try again.');
+      }
+    }
+  };
+
+  const captureFace = async () => {
+    if (!window.faceapi || !videoRef.current || models !== 'ready') return;
+    setCapture('capturing');
+    setError('');
+    try {
+      const options = new window.faceapi.TinyFaceDetectorOptions({ inputSize:  TinyFaceDetectorInputSize, scoreThreshold: 0.5 });
+      const detection = await window.faceapi.detectSingleFace(videoRef.current, options).withFaceLandmarks().withFaceDescriptor();
+      if (!detection) throw new Error('No face found. Center your face in the frame and try again.');
+      onCaptured(Array.from(detection.descriptor));
+      setCapture('success');
+    } catch (cause) {
+      setCapture('error');
+      setError(cause instanceof Error ? cause.message : 'Face capture failed. Try again in better lighting.');
+    }
+  };
+
+  return <div className="space-y-3 rounded-2xl border border-border bg-secondary/45 p-3" data-testid={`face-capture-${purpose}`}>
+    <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-sidebar">
+      <video ref={videoRef} muted playsInline className={`h-full w-full object-cover ${permission === 'granted' ? '' : 'hidden'}`} aria-label="Live camera preview" />
+      {permission !== 'granted' && <div className="flex h-full flex-col items-center justify-center px-5 text-center text-sidebar-foreground/70"><Camera size={28} className="mb-2 text-sidebar-primary" /><p className="text-xs">Camera access is required to capture a face sample.</p></div>}
+      {permission === 'granted' && <div className="pointer-events-none absolute inset-6 rounded-[45%] border border-sidebar-primary/80" />}
+      {capture === 'capturing' && <div className="absolute inset-0 flex items-center justify-center bg-sidebar/50 text-sidebar-foreground"><LoaderCircle className="animate-spin" size={28} /></div>}
+    </div>
+    {permission === 'idle' && <button type="button" data-testid={`button-start-camera-${purpose}`} onClick={startCamera} className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/35 bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary hover:border-primary"><Video size={15} /> Allow camera access</button>}
+    {permission === 'requesting' && <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" /> Requesting camera permission…</p>}
+    {permission === 'denied' && <button type="button" data-testid={`button-retry-permission-${purpose}`} onClick={startCamera} className="w-full rounded-xl border border-border bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] hover:border-primary hover:text-primary">Try camera access again</button>}
+    {permission === 'granted' && models === 'loading' && <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" /> Loading face verification models…</p>}
+    {permission === 'granted' && models === 'ready' && <button type="button" data-testid={`button-capture-face-${purpose}`} onClick={captureFace} className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground hover:-translate-y-0.5"><Camera size={15} /> {capture === 'success' ? 'Capture again' : 'Capture face sample'}</button>}
+    {models === 'error' && <><InlineError message="Face verification models are unavailable. Check your connection and try again." /><button type="button" data-testid={`button-retry-camera-${purpose}`} onClick={startCamera} className="w-full rounded-xl border border-border bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] hover:border-primary hover:text-primary">Retry camera and models</button></>}
+    {capture === 'success' && <p className="text-xs font-semibold text-[#236448]">Face sample captured locally. Only its mathematical descriptor will be sent for {purpose}.</p>}
+    {error && capture !== 'error' && models !== 'error' && <p className="text-xs text-[#a43b32]">{error}</p>}
+    {capture === 'error' && <p className="text-xs text-[#a43b32]">{error}</p>}
+  </div>;
+}
+
+const TinyFaceDetectorInputSize = 416;
 
 function LedgerPage() {
   const ledger = useGetLedgerStatus();
