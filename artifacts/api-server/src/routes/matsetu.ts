@@ -15,12 +15,8 @@ import {
   VerifyVoterResponse,
 } from "@workspace/api-zod";
 import {
-  activities,
-  elections,
   getPublicVoter,
-  type Election,
-  type Voter,
-  voters,
+  matsetuStore,
 } from "../matsetu-store";
 
 const router: IRouter = Router();
@@ -31,48 +27,72 @@ const distance = (left: number[], right: number[]) =>
     left.reduce((sum, value, index) => sum + (value - (right[index] ?? 0)) ** 2, 0),
   );
 
-router.get("/dashboard/summary", (_req, res) => {
+router.use(async (_req, res, next) => {
+  try {
+    await matsetuStore.ready();
+    next();
+  } catch {
+    res.status(503).json({ error: "Persistent data store is unavailable." });
+  }
+});
+
+const addActivity = async (
+  type: "registration" | "verification" | "ledger" | "election",
+  label: string,
+  detail: string,
+  status: "success" | "pending" | "warning",
+) => {
+  await matsetuStore.addActivity({
+    id: `activity-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    label,
+    detail,
+    timestamp: new Date().toISOString(),
+    status,
+  });
+};
+
+router.get("/dashboard/summary", async (_req, res) => {
+  const counts = await matsetuStore.getDashboardCounts();
   const summary = GetDashboardSummaryResponse.parse({
-    activeVoters: voters.filter((voter) => voter.status !== "flagged").length,
-    activeElections: elections.filter((election) =>
-      ["live", "scheduled"].includes(election.status),
-    ).length,
+    activeVoters: counts.activeVoters,
+    activeElections: counts.activeElections,
     verifiedTransactions: 842,
-    duplicateAttempts: 1,
+    duplicateAttempts: counts.duplicateAttempts,
     systemStatus: "operational",
   });
   res.json(summary);
 });
 
-router.get("/elections", (_req, res) => {
-  res.json(GetElectionsResponse.parse(elections));
+router.get("/elections", async (_req, res) => {
+  res.json(GetElectionsResponse.parse(await matsetuStore.listElections()));
 });
 
-router.post("/elections", (req, res) => {
+router.post("/elections", async (req, res) => {
   const input = CreateElectionBody.safeParse(req.body);
   if (!input.success) {
     res.status(400).json({ error: "Provide a title and a valid election window." });
     return;
   }
 
-  const election: Election = {
-    id: `election-${Date.now()}`,
+  const election = await matsetuStore.createElection({
     title: input.data.title,
-    status: "draft",
-    candidateCount: 0,
-    voterCount: 0,
-    startAt: new Date(input.data.startAt).toISOString(),
-    endAt: new Date(input.data.endAt).toISOString(),
-    contractAddress: "pending deployment",
-  };
-  elections.unshift(election);
+    startAt: input.data.startAt.toISOString(),
+    endAt: input.data.endAt.toISOString(),
+  });
+  await addActivity(
+    "election",
+    "Election draft created",
+    `${election.title} is ready for candidate configuration`,
+    "pending",
+  );
   res.status(201).json(GetElectionResponse.parse(election));
 });
 
-router.get("/elections/:id", (req, res) => {
+router.get("/elections/:id", async (req, res) => {
   const params = GetElectionParams.safeParse(req.params);
   const election = params.success
-    ? elections.find((candidate) => candidate.id === params.data.id)
+    ? await matsetuStore.getElection(params.data.id)
     : undefined;
   if (!election) {
     res.status(404).json({ error: "Election not found." });
@@ -81,47 +101,51 @@ router.get("/elections/:id", (req, res) => {
   res.json(GetElectionResponse.parse(election));
 });
 
-router.get("/voters", (_req, res) => {
+router.get("/voters", async (_req, res) => {
+  const voters = await matsetuStore.listVoters();
   res.json(GetVotersResponse.parse(voters.map(getPublicVoter)));
 });
 
-router.post("/voters/register", (req, res) => {
+router.post("/voters/register", async (req, res) => {
   const input = RegisterVoterBody.safeParse(req.body);
   if (!input.success) {
     res.status(400).json({ error: "A 128-dimensional descriptor is required." });
     return;
   }
 
+  const voters = await matsetuStore.listVoters();
   const closestMatch = voters
     .map((voter) => ({ voter, score: distance(input.data.descriptor, voter.descriptor) }))
     .sort((left, right) => left.score - right.score)[0];
 
   if (closestMatch && closestMatch.score < DUPLICATE_THRESHOLD) {
+    await addActivity(
+      "verification",
+      "Duplicate attempt blocked",
+      `Similarity score ${closestMatch.score.toFixed(3)} matched an existing descriptor`,
+      "warning",
+    );
     res.status(409).json({
       error: `Duplicate identity blocked. Closest descriptor distance: ${closestMatch.score.toFixed(3)}.`,
     });
     return;
   }
 
-  const now = new Date().toISOString();
-  const voter: Voter = {
-    id: `voter-${Date.now()}`,
-    displayName: input.data.displayName,
-    identifier: input.data.identifier,
-    status: "pending",
-    registeredAt: now,
-    lastVerifiedAt: now,
-    descriptor: input.data.descriptor,
-  };
-  voters.unshift(voter);
+  const voter = await matsetuStore.createVoter(input.data);
+  await addActivity(
+    "registration",
+    "Voter registration captured",
+    `${voter.identifier} has a descriptor ready for verification`,
+    "pending",
+  );
   res.status(201).json(RegisterVoterResponse.parse(getPublicVoter(voter)));
 });
 
-router.post("/voters/:id/verify", (req, res) => {
+router.post("/voters/:id/verify", async (req, res) => {
   const params = VerifyVoterParams.safeParse(req.params);
   const input = VerifyVoterBody.safeParse(req.body);
   const voter = params.success
-    ? voters.find((candidate) => candidate.id === params.data.id)
+    ? await matsetuStore.getVoter(params.data.id)
     : undefined;
   if (!voter) {
     res.status(404).json({ error: "Voter not found." });
@@ -135,9 +159,14 @@ router.post("/voters/:id/verify", (req, res) => {
   const score = distance(input.data.descriptor, voter.descriptor);
   const verified = score < DUPLICATE_THRESHOLD;
   if (verified) {
-    voter.status = "verified";
-    voter.lastVerifiedAt = new Date().toISOString();
+    await matsetuStore.markVoterVerified(voter.id, new Date().toISOString());
   }
+  await addActivity(
+    "verification",
+    verified ? "Voter verified" : "Verification threshold missed",
+    `${voter.identifier} ${verified ? "passed" : "did not pass"} the d < ${DUPLICATE_THRESHOLD} match threshold`,
+    verified ? "success" : "warning",
+  );
   res.json(
     VerifyVoterResponse.parse({
       verified,
@@ -162,8 +191,8 @@ router.get("/ledger/status", (_req, res) => {
   );
 });
 
-router.get("/activity", (_req, res) => {
-  res.json(GetActivityResponse.parse(activities));
+router.get("/activity", async (_req, res) => {
+  res.json(GetActivityResponse.parse(await matsetuStore.listActivities()));
 });
 
 export default router;
