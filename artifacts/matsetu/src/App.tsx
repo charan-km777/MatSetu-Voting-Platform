@@ -19,6 +19,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
+import { castBallot, connectWallet, type WalletFailure } from '@/lib/ballot';
 
 const queryClient = new QueryClient();
 
@@ -44,6 +45,9 @@ type FaceApi = {
 declare global {
   interface Window {
     faceapi?: FaceApi;
+    ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
+    __MATSETU_TEST_MODE__?: boolean;
+    __MATSETU_TEST_DESCRIPTOR__?: number[];
   }
 }
 
@@ -182,7 +186,115 @@ function ElectionDetail() {
   if (query.isLoading) return <div><Skeleton className="h-9 w-28" /><Skeleton className="mt-8 h-48 w-full" /></div>;
   if (query.isError || !query.data) return <ErrorState retry={() => query.refetch()} />;
   const election = query.data;
-  return <div className="matsetu-rise"><Link href="/elections" data-testid="link-back-elections" className="mb-8 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:text-primary"><ArrowLeft size={14} /> All elections</Link><div className="rounded-3xl border border-border bg-card p-6 shadow-sm md:p-10"><div className="flex flex-col justify-between gap-6 md:flex-row md:items-start"><div><div className="flex items-center gap-3"><span className="font-mono text-[10px] uppercase tracking-[0.18em] text-primary">Election brief</span><StatusPill value={election.status} /></div><h1 data-testid="text-election-title" className="mt-5 max-w-3xl font-display text-4xl font-semibold tracking-[-0.05em] md:text-6xl">{election.title}</h1><p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">This ballot is represented on the local ledger and ready for operational review.</p></div><div className="rounded-2xl bg-secondary p-4 md:min-w-[220px]"><div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Ballot window</div><div className="mt-3 text-sm font-semibold">{formatDate(election.startAt)}</div><div className="text-xs text-muted-foreground">{formatTime(election.startAt)} — {formatTime(election.endAt)}</div></div></div><div className="mt-10 grid gap-4 border-t border-border pt-6 sm:grid-cols-3"><DataPair label="Candidates" value={election.candidateCount} large /><DataPair label="Registered voters" value={election.voterCount} large /><div><div className="font-mono text-[9px] uppercase tracking-[0.15em] text-muted-foreground">Contract address</div><div className="mt-2 flex items-center gap-2"><code className="max-w-[200px] truncate text-xs font-semibold">{election.contractAddress || 'Not deployed'}</code>{election.contractAddress && <button data-testid="button-copy-contract" aria-label="Copy contract address" onClick={() => navigator.clipboard?.writeText(election.contractAddress)} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"><Copy size={14} /></button>}</div></div></div></div></div>;
+  return (
+    <div className="matsetu-rise">
+      <Link href="/elections" data-testid="link-back-elections" className="mb-8 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:text-primary">
+        <ArrowLeft size={14} /> All elections
+      </Link>
+      <div className="rounded-3xl border border-border bg-card p-6 shadow-sm md:p-10">
+        <div className="flex flex-col justify-between gap-6 md:flex-row md:items-start">
+          <div>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-primary">Election brief</span>
+              <StatusPill value={election.status} />
+            </div>
+            <h1 data-testid="text-election-title" className="mt-5 max-w-3xl font-display text-4xl font-semibold tracking-[-0.05em] md:text-6xl">{election.title}</h1>
+            <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">This ballot is represented on the local ledger and ready for operational review.</p>
+          </div>
+          <div className="rounded-2xl bg-secondary p-4 md:min-w-[220px]">
+            <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Ballot window</div>
+            <div className="mt-3 text-sm font-semibold">{formatDate(election.startAt)}</div>
+            <div className="text-xs text-muted-foreground">{formatTime(election.startAt)} — {formatTime(election.endAt)}</div>
+          </div>
+        </div>
+        <div className="mt-10 grid gap-4 border-t border-border pt-6 sm:grid-cols-3">
+          <DataPair label="Candidates" value={election.candidateCount} large />
+          <DataPair label="Registered voters" value={election.voterCount} large />
+          <div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.15em] text-muted-foreground">Contract address</div>
+            <div className="mt-2 flex items-center gap-2">
+              <code className="max-w-[200px] truncate text-xs font-semibold">{election.contractAddress || 'Not deployed'}</code>
+              {election.contractAddress && <button data-testid="button-copy-contract" aria-label="Copy contract address" onClick={() => navigator.clipboard?.writeText(election.contractAddress)} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"><Copy size={14} /></button>}
+            </div>
+          </div>
+        </div>
+      </div>
+      <BallotPanel election={election} />
+    </div>
+  );
+}
+
+function BallotPanel({ election }: { election: Election }) {
+  const [account, setAccount] = useState('');
+  const [candidateId, setCandidateId] = useState(1);
+  const [state, setState] = useState<'idle' | 'connecting' | 'ready' | 'signing' | 'confirmed' | 'rejected' | 'cancelled' | 'duplicate' | 'error'>('idle');
+  const [message, setMessage] = useState('');
+  const [transactionHash, setTransactionHash] = useState('');
+  const contractReady = /^0x[a-fA-F0-9]{40}$/.test(election.contractAddress);
+  const electionOpen = election.status === 'live';
+
+  const connect = async () => {
+    setState('connecting');
+    setMessage('');
+    try {
+      const connectedAccount = await connectWallet();
+      setAccount(connectedAccount);
+      setState('ready');
+    } catch (cause) {
+      const failure = cause as WalletFailure;
+      setState(failure.kind === 'rejected' ? 'rejected' : 'error');
+      setMessage(failure.message);
+    }
+  };
+
+  const sign = async () => {
+    setState('signing');
+    setMessage('');
+    try {
+      const result = await castBallot(election.contractAddress, candidateId);
+      setTransactionHash(result.hash);
+      setAccount(result.account);
+      setState('confirmed');
+    } catch (cause) {
+      const failure = cause as WalletFailure;
+      setState(failure.kind === 'cancelled' ? 'cancelled' : failure.kind === 'duplicate' ? 'duplicate' : 'error');
+      setMessage(failure.message);
+    }
+  };
+
+  return <section className="mt-6 overflow-hidden rounded-3xl border border-border bg-card shadow-sm" data-testid="ballot-panel">
+    <div className="border-b border-border bg-sidebar p-6 text-sidebar-foreground md:p-8">
+      <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-start">
+        <div>
+          <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-sidebar-primary"><ShieldCheck size={14} /> Voter authorization</div>
+          <h2 className="mt-4 font-display text-3xl font-semibold tracking-[-0.04em]">Sign one ballot.</h2>
+          <p className="mt-2 max-w-xl text-xs leading-5 text-sidebar-foreground/60">Identity verification stays off-chain. MetaMask signs only the selected ballot transaction, and the contract blocks a second vote from the same wallet.</p>
+        </div>
+        <StatusPill value={state === 'confirmed' ? 'confirmed' : account ? 'wallet connected' : 'wallet required'} tone={state === 'confirmed' ? 'green' : account ? 'blue' : 'amber'} />
+      </div>
+    </div>
+    <div className="grid gap-6 p-6 md:grid-cols-[1fr_0.9fr] md:p-8">
+      <div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Choose a candidate</div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {Array.from({ length: election.candidateCount }, (_, index) => index + 1).map((id) => <label key={id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${candidateId === id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/45'}`}><input className="sr-only" type="radio" name="ballot-candidate" value={id} checked={candidateId === id} onChange={() => setCandidateId(id)} data-testid={`ballot-candidate-${id}`} /><span className={`flex h-7 w-7 items-center justify-center rounded-lg font-mono text-[10px] ${candidateId === id ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>{String(id).padStart(2, '0')}</span>Candidate {String(id).padStart(2, '0')}</label>)}
+        </div>
+      </div>
+      <div className="rounded-2xl bg-secondary/70 p-4">
+        <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Wallet status</div>
+        {account ? <div className="mt-3 rounded-xl bg-card p-3"><div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">Connected account</div><code data-testid="text-wallet-account" className="mt-2 block truncate text-xs font-semibold">{account}</code></div> : <p className="mt-3 text-xs leading-5 text-muted-foreground">Connect MetaMask before signing. The wallet address is the contract’s one-vote identity.</p>}
+        {!account && <button type="button" data-testid="button-connect-wallet" onClick={connect} disabled={state === 'connecting'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:opacity-50">{state === 'connecting' ? <><LoaderCircle size={15} className="animate-spin" /> Connecting…</> : 'Connect MetaMask'}</button>}
+        {account && <button type="button" data-testid="button-sign-ballot" onClick={sign} disabled={!contractReady || !electionOpen || state === 'signing' || state === 'confirmed'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{state === 'signing' ? <><LoaderCircle size={15} className="animate-spin" /> Waiting for signature…</> : state === 'confirmed' ? 'Ballot confirmed' : 'Sign and cast ballot'} <ShieldCheck size={15} /></button>}
+        {!contractReady && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">This election is not connected to a deployed contract yet.</p>}
+        {!electionOpen && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">Ballot signing is available when the election is live.</p>}
+        {state === 'confirmed' && <div data-testid="ballot-confirmed" className="mt-4 rounded-xl bg-[#e8f3eb] p-3 text-xs text-[#236448]"><div className="flex items-center gap-2 font-semibold"><CheckCircle2 size={15} /> Ballot confirmed on the ledger.</div><code className="mt-2 block truncate text-[10px]">{transactionHash}</code></div>}
+        {state === 'rejected' && <div data-testid="wallet-rejected" className="mt-4"><InlineError message={message} /></div>}
+        {state === 'cancelled' && <div data-testid="ballot-cancelled" className="mt-4"><InlineError message={message} /></div>}
+        {state === 'duplicate' && <div data-testid="ballot-rejected" className="mt-4"><InlineError message={message} /></div>}
+        {state === 'error' && <div data-testid="ballot-error" className="mt-4"><InlineError message={message} /></div>}
+      </div>
+    </div>
+  </section>;
 }
 
 function DataPair({ label, value, large }: { label: string; value: number | string; large?: boolean }) {
@@ -290,6 +402,14 @@ function FaceCapture({ onCaptured, purpose }: { onCaptured: (descriptor: number[
     }
   };
 
+  const useTestSample = () => {
+    const descriptor = window.__MATSETU_TEST_DESCRIPTOR__;
+    if (!window.__MATSETU_TEST_MODE__ || !descriptor || descriptor.length !== 128) return;
+    onCaptured([...descriptor]);
+    setCapture('success');
+    setError('');
+  };
+
   return <div className="space-y-3 rounded-2xl border border-border bg-secondary/45 p-3" data-testid={`face-capture-${purpose}`}>
     <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-sidebar">
       <video ref={videoRef} muted playsInline className={`h-full w-full object-cover ${permission === 'granted' ? '' : 'hidden'}`} aria-label="Live camera preview" />
@@ -297,7 +417,8 @@ function FaceCapture({ onCaptured, purpose }: { onCaptured: (descriptor: number[
       {permission === 'granted' && <div className="pointer-events-none absolute inset-6 rounded-[45%] border border-sidebar-primary/80" />}
       {capture === 'capturing' && <div className="absolute inset-0 flex items-center justify-center bg-sidebar/50 text-sidebar-foreground"><LoaderCircle className="animate-spin" size={28} /></div>}
     </div>
-    {permission === 'idle' && <button type="button" data-testid={`button-start-camera-${purpose}`} onClick={startCamera} className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/35 bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary hover:border-primary"><Video size={15} /> Allow camera access</button>}
+     {permission === 'idle' && <button type="button" data-testid={`button-start-camera-${purpose}`} onClick={startCamera} className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/35 bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary hover:border-primary"><Video size={15} /> Allow camera access</button>}
+     {window.__MATSETU_TEST_MODE__ && <button type="button" data-testid={`button-use-test-face-${purpose}`} onClick={useTestSample} className="w-full rounded-xl border border-dashed border-primary/45 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-primary hover:border-primary">Use deterministic test sample</button>}
     {permission === 'requesting' && <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" /> Requesting camera permission…</p>}
     {permission === 'denied' && <button type="button" data-testid={`button-retry-permission-${purpose}`} onClick={startCamera} className="w-full rounded-xl border border-border bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] hover:border-primary hover:text-primary">Try camera access again</button>}
     {permission === 'granted' && models === 'loading' && <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" /> Loading face verification models…</p>}

@@ -13,4 +13,5 @@ RUN PORT=4173 BASE_PATH=/ pnpm --filter @workspace/matsetu run build
 
 FROM nginx:1.27-alpine
 COPY --from=build /workspace/artifacts/matsetu/dist/public /usr/share/nginx/html
+COPY containers/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
