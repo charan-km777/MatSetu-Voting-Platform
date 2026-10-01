@@ -1,6 +1,6 @@
-import app from "./app";
+import { createApp } from "./app";
 import { logger } from "./lib/logger";
-import { matsetuStore } from "./matsetu-store";
+import { createMatSetuRepository } from "./matsetu-store";
 
 const rawPort = process.env["PORT"];
 
@@ -16,22 +16,32 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-const start = async () => {
-  try {
-    await matsetuStore.ready();
-  } catch (error) {
-    logger.error({ err: error }, "Persistent data store initialization failed");
-    process.exit(1);
-  }
-
-  app.listen(port, (err) => {
-    if (err) {
-      logger.error({ err }, "Error listening on port");
-      process.exit(1);
-    }
-
-    logger.info({ port, store: matsetuStore.mode }, "Server listening");
+async function start(): Promise<void> {
+  const repository = await createMatSetuRepository();
+  const app = createApp(repository);
+  const server = app.listen(port, () => {
+    logger.info(
+      { port, persistence: process.env["MONGODB_URI"] ? "mongodb" : "memory" },
+      "Server listening",
+    );
   });
-};
 
-void start();
+  server.on("error", async (error) => {
+    logger.error({ err: error }, "Error listening on port");
+    await repository.close();
+    process.exit(1);
+  });
+
+  const shutdown = async (signal: string) => {
+    logger.info({ signal }, "Shutting down server");
+    await repository.close();
+    server.close(() => process.exit(0));
+  };
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+}
+
+start().catch((error: unknown) => {
+  logger.error({ err: error }, "Server startup failed");
+  process.exit(1);
+});

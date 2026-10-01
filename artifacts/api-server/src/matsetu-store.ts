@@ -1,4 +1,10 @@
-import { MongoClient, type Collection, type Db } from "mongodb";
+import { randomUUID } from "node:crypto";
+import {
+  MongoClient,
+  type Collection,
+  type Db,
+  type OptionalUnlessRequiredId,
+} from "mongodb";
 
 export type ElectionStatus = "draft" | "scheduled" | "live" | "closed";
 export type VoterStatus = "verified" | "pending" | "flagged";
@@ -34,38 +40,71 @@ export interface Activity {
   status: ActivityStatus;
 }
 
-export interface CreateElectionRecord {
-  title: string;
-  startAt: string;
-  endAt: string;
+export interface LedgerStatus {
+  network: string;
+  blockNumber: number;
+  latencyMs: number;
+  contractStatus: "deployed" | "pending" | "offline";
+  rpcUrl: string;
 }
 
-export interface RegisterVoterRecord {
-  displayName: string;
-  identifier: string;
+export interface BiometricMatch {
+  voter: Voter;
+  score: number;
+}
+
+export interface BiometricVerificationMetadata {
   descriptor: number[];
+  lastVerifiedAt: string;
 }
 
-export interface MatsetuStore {
-  readonly mode: "memory" | "mongodb";
-  ready(): Promise<void>;
-  listElections(): Promise<Election[]>;
-  getElection(id: string): Promise<Election | undefined>;
-  createElection(input: CreateElectionRecord): Promise<Election>;
+export interface VoterRepository {
   listVoters(): Promise<Voter[]>;
-  getVoter(id: string): Promise<Voter | undefined>;
-  createVoter(input: RegisterVoterRecord): Promise<Voter>;
-  markVoterVerified(id: string, timestamp: string): Promise<Voter | undefined>;
+  findVoterById(id: string): Promise<Voter | undefined>;
+  createVoter(voter: Voter): Promise<Voter>;
+  updateVerification(
+    id: string,
+    verification: Pick<Voter, "status" | "lastVerifiedAt">,
+  ): Promise<Voter | undefined>;
+}
+
+export interface BiometricVerificationRepository {
+  findClosest(descriptor: number[]): Promise<BiometricMatch | undefined>;
+  getVerificationMetadata(
+    voterId: string,
+  ): Promise<BiometricVerificationMetadata | undefined>;
+}
+
+export interface ElectionRepository {
+  listElections(): Promise<Election[]>;
+  findElectionById(id: string): Promise<Election | undefined>;
+  createElection(election: Election): Promise<Election>;
+}
+
+export interface LedgerStatusRepository {
+  getStatus(): Promise<LedgerStatus>;
+}
+
+export interface ActivityRepository {
   listActivities(): Promise<Activity[]>;
-  addActivity(activity: Activity): Promise<void>;
+  createActivity(activity: Activity): Promise<Activity>;
+}
+
+export interface MatSetuRepository
+  extends VoterRepository,
+    BiometricVerificationRepository,
+    ElectionRepository,
+    LedgerStatusRepository,
+    ActivityRepository {
   getDashboardCounts(): Promise<{
     activeVoters: number;
     activeElections: number;
     duplicateAttempts: number;
   }>;
+  close(): Promise<void>;
 }
 
-const makeDescriptor = (seed: number) =>
+const descriptor = (seed: number) =>
   Array.from({ length: 128 }, (_, index) =>
     Number(Math.sin(seed + index * 0.17).toFixed(6)),
   );
@@ -103,7 +142,7 @@ function createSeedData() {
       status: "verified",
       registeredAt: new Date(now - 1000 * 60 * 60 * 36).toISOString(),
       lastVerifiedAt: new Date(now - 1000 * 60 * 18).toISOString(),
-      descriptor: makeDescriptor(1),
+      descriptor: descriptor(1),
     },
     {
       id: "voter-002",
@@ -112,7 +151,7 @@ function createSeedData() {
       status: "verified",
       registeredAt: new Date(now - 1000 * 60 * 60 * 29).toISOString(),
       lastVerifiedAt: new Date(now - 1000 * 60 * 56).toISOString(),
-      descriptor: makeDescriptor(2),
+      descriptor: descriptor(2),
     },
     {
       id: "voter-003",
@@ -121,7 +160,7 @@ function createSeedData() {
       status: "pending",
       registeredAt: new Date(now - 1000 * 60 * 8).toISOString(),
       lastVerifiedAt: new Date(now - 1000 * 60 * 8).toISOString(),
-      descriptor: makeDescriptor(3),
+      descriptor: descriptor(3),
     },
   ];
 
@@ -163,79 +202,93 @@ function createSeedData() {
   return { elections, voters, activities };
 }
 
-class MemoryMatsetuStore implements MatsetuStore {
-  readonly mode = "memory" as const;
+const ledgerStatus: LedgerStatus = {
+  network: "Hardhat local",
+  blockNumber: 1842,
+  latencyMs: 42,
+  contractStatus: "deployed",
+  rpcUrl: process.env["HARDHAT_RPC_URL"] ?? "http://hardhat:8545",
+};
+
+const clone = <T>(value: T): T => structuredClone(value);
+
+class InMemoryMatSetuRepository implements MatSetuRepository {
   private readonly data = createSeedData();
 
-  async ready() {}
-
-  async listElections() {
-    return this.data.elections.map((election) => ({ ...election }));
+  async listVoters(): Promise<Voter[]> {
+    return this.data.voters.map(clone);
   }
 
-  async getElection(id: string) {
+  async findVoterById(id: string): Promise<Voter | undefined> {
+    const voter = this.data.voters.find((candidate) => candidate.id === id);
+    return voter ? clone(voter) : undefined;
+  }
+
+  async createVoter(voter: Voter): Promise<Voter> {
+    this.data.voters.unshift(clone(voter));
+    return clone(voter);
+  }
+
+  async updateVerification(
+    id: string,
+    verification: Pick<Voter, "status" | "lastVerifiedAt">,
+  ): Promise<Voter | undefined> {
+    const voter = this.data.voters.find((candidate) => candidate.id === id);
+    if (!voter) {
+      return undefined;
+    }
+    Object.assign(voter, verification);
+    return clone(voter);
+  }
+
+  async findClosest(descriptorToMatch: number[]): Promise<BiometricMatch | undefined> {
+    const voters = await this.listVoters();
+    return closestMatch(voters, descriptorToMatch);
+  }
+
+  async getVerificationMetadata(
+    voterId: string,
+  ): Promise<BiometricVerificationMetadata | undefined> {
+    const voter = await this.findVoterById(voterId);
+    return voter
+      ? {
+          descriptor: [...voter.descriptor],
+          lastVerifiedAt: voter.lastVerifiedAt,
+        }
+      : undefined;
+  }
+
+  async listElections(): Promise<Election[]> {
+    return this.data.elections.map(clone);
+  }
+
+  async findElectionById(id: string): Promise<Election | undefined> {
     const election = this.data.elections.find((candidate) => candidate.id === id);
-    return election ? { ...election } : undefined;
+    return election ? clone(election) : undefined;
   }
 
-  async createElection(input: CreateElectionRecord) {
-    const election: Election = {
-      id: `election-${Date.now()}`,
-      title: input.title,
-      status: "draft",
-      candidateCount: 0,
-      voterCount: 0,
-      startAt: new Date(input.startAt).toISOString(),
-      endAt: new Date(input.endAt).toISOString(),
-      contractAddress: "pending deployment",
-    };
-    this.data.elections.unshift(election);
-    return { ...election };
+  async createElection(election: Election): Promise<Election> {
+    this.data.elections.unshift(clone(election));
+    return clone(election);
   }
 
-  async listVoters() {
-    return this.data.voters.map((voter) => ({ ...voter, descriptor: [...voter.descriptor] }));
+  async getStatus(): Promise<LedgerStatus> {
+    return clone(ledgerStatus);
   }
 
-  async getVoter(id: string) {
-    const voter = this.data.voters.find((candidate) => candidate.id === id);
-    return voter ? { ...voter, descriptor: [...voter.descriptor] } : undefined;
+  async listActivities(): Promise<Activity[]> {
+    return this.data.activities.map(clone);
   }
 
-  async createVoter(input: RegisterVoterRecord) {
-    const now = new Date().toISOString();
-    const voter: Voter = {
-      id: `voter-${Date.now()}`,
-      displayName: input.displayName,
-      identifier: input.identifier,
-      status: "pending",
-      registeredAt: now,
-      lastVerifiedAt: now,
-      descriptor: [...input.descriptor],
-    };
-    this.data.voters.unshift(voter);
-    return { ...voter, descriptor: [...voter.descriptor] };
-  }
-
-  async markVoterVerified(id: string, timestamp: string) {
-    const voter = this.data.voters.find((candidate) => candidate.id === id);
-    if (!voter) return undefined;
-    voter.status = "verified";
-    voter.lastVerifiedAt = timestamp;
-    return { ...voter, descriptor: [...voter.descriptor] };
-  }
-
-  async listActivities() {
-    return this.data.activities.map((activity) => ({ ...activity }));
-  }
-
-  async addActivity(activity: Activity) {
-    this.data.activities.unshift({ ...activity });
+  async createActivity(activity: Activity): Promise<Activity> {
+    this.data.activities.unshift(clone(activity));
+    return clone(activity);
   }
 
   async getDashboardCounts() {
     return {
-      activeVoters: this.data.voters.filter((voter) => voter.status !== "flagged").length,
+      activeVoters: this.data.voters.filter((voter) => voter.status !== "flagged")
+        .length,
       activeElections: this.data.elections.filter((election) =>
         ["live", "scheduled"].includes(election.status),
       ).length,
@@ -244,155 +297,234 @@ class MemoryMatsetuStore implements MatsetuStore {
       ).length,
     };
   }
+
+  async close(): Promise<void> {}
 }
 
-class MongoMatsetuStore implements MatsetuStore {
-  readonly mode = "mongodb" as const;
-  private readonly client: MongoClient;
-  private db!: Db;
-  private elections!: Collection<Election>;
-  private voters!: Collection<Voter>;
-  private activities!: Collection<Activity>;
-  private readonly uri: string;
-  private readonly databaseName: string;
+type MongoVoter = Voter & { _id?: string };
+type MongoElection = Election & { _id?: string };
+type MongoActivity = Activity & { _id?: string };
 
-  constructor(uri: string) {
-    this.uri = uri;
-    this.databaseName = process.env.MONGODB_DB_NAME || "matsetu";
-    this.client = new MongoClient(uri, {
-      serverSelectionTimeoutMS: 5_000,
-      connectTimeoutMS: 5_000,
+class MongoMatSetuRepository implements MatSetuRepository {
+  private constructor(
+    private readonly client: MongoClient,
+    private readonly database: Db,
+    private readonly voters: Collection<MongoVoter>,
+    private readonly elections: Collection<MongoElection>,
+    private readonly activities: Collection<MongoActivity>,
+  ) {}
+
+  static async connect(uri: string): Promise<MongoMatSetuRepository> {
+    const client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000,
     });
-  }
-
-  async ready() {
-    if (this.db) return;
-
+    const databaseName = process.env["MONGODB_DB_NAME"];
     let lastError: unknown;
+
     for (let attempt = 1; attempt <= 10; attempt += 1) {
       try {
-        await this.client.connect();
-        this.db = this.client.db(this.databaseName);
-        this.elections = this.db.collection<Election>("elections");
-        this.voters = this.db.collection<Voter>("voters");
-        this.activities = this.db.collection<Activity>("activities");
-        await this.ensureIndexes();
-        await this.seedOnce();
-        return;
+        await client.connect();
+        const database = databaseName ? client.db(databaseName) : client.db();
+        const repository = new MongoMatSetuRepository(
+          client,
+          database,
+          database.collection<MongoVoter>("voters"),
+          database.collection<MongoElection>("elections"),
+          database.collection<MongoActivity>("activities"),
+        );
+        await repository.initialize();
+        return repository;
       } catch (error) {
         lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        if (attempt < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
       }
     }
 
+    await client.close().catch(() => undefined);
     throw new Error(
-      `MongoDB initialization failed for ${this.uri.replace(/\/\/.*@/, "//***@")}: ${String(lastError)}`,
+      `MongoDB is configured but the connection or initialization failed: ${formatError(lastError)}`,
+      { cause: lastError },
     );
   }
 
-  private async ensureIndexes() {
+  private async initialize(): Promise<void> {
     await Promise.all([
-      this.elections.createIndex({ id: 1 }, { unique: true }),
       this.voters.createIndex({ id: 1 }, { unique: true }),
       this.voters.createIndex({ identifier: 1 }, { unique: true }),
+      this.elections.createIndex({ id: 1 }, { unique: true }),
+      this.activities.createIndex({ id: 1 }, { unique: true }),
       this.activities.createIndex({ timestamp: -1 }),
     ]);
-  }
 
-  private async seedOnce() {
-    const metadata = this.db.collection<{ _id: string }>("metadata");
-    const marker = await metadata.findOne({ _id: "phase1-seeded" });
-    if (marker) return;
-
-    const seed = createSeedData();
+    const seeds = createSeedData();
     await Promise.all([
-      this.elections.insertMany(seed.elections),
-      this.voters.insertMany(seed.voters),
-      this.activities.insertMany(seed.activities),
+      seedCollection(this.voters, seeds.voters),
+      seedCollection(this.elections, seeds.elections),
+      seedCollection(this.activities, seeds.activities),
     ]);
-    await metadata.insertOne({ _id: "phase1-seeded" });
+    await this.database.command({ ping: 1 });
   }
 
-  async listElections() {
-    return this.elections.find({}, { projection: { _id: 0 } }).sort({ startAt: 1 }).toArray();
+  async listVoters(): Promise<Voter[]> {
+    return this.voters
+      .find({}, { projection: { _id: 0 } })
+      .sort({ registeredAt: -1 })
+      .toArray();
   }
 
-  async getElection(id: string) {
-    const election = await this.elections.findOne({ id }, { projection: { _id: 0 } });
-    return election ?? undefined;
+  async findVoterById(id: string): Promise<Voter | undefined> {
+    return (
+      (await this.voters.findOne({ id }, { projection: { _id: 0 } })) ??
+      undefined
+    );
   }
 
-  async createElection(input: CreateElectionRecord) {
-    const election: Election = {
-      id: `election-${Date.now()}`,
-      title: input.title,
-      status: "draft",
-      candidateCount: 0,
-      voterCount: 0,
-      startAt: new Date(input.startAt).toISOString(),
-      endAt: new Date(input.endAt).toISOString(),
-      contractAddress: "pending deployment",
-    };
-    await this.elections.insertOne(election);
-    return election;
+  async createVoter(voter: Voter): Promise<Voter> {
+    await this.voters.insertOne(clone(voter));
+    return clone(voter);
   }
 
-  async listVoters() {
-    return this.voters.find({}, { projection: { _id: 0 } }).sort({ registeredAt: -1 }).toArray();
-  }
-
-  async getVoter(id: string) {
-    const voter = await this.voters.findOne({ id }, { projection: { _id: 0 } });
-    return voter ?? undefined;
-  }
-
-  async createVoter(input: RegisterVoterRecord) {
-    const now = new Date().toISOString();
-    const voter: Voter = {
-      id: `voter-${Date.now()}`,
-      displayName: input.displayName,
-      identifier: input.identifier,
-      status: "pending",
-      registeredAt: now,
-      lastVerifiedAt: now,
-      descriptor: [...input.descriptor],
-    };
-    await this.voters.insertOne(voter);
-    return voter;
-  }
-
-  async markVoterVerified(id: string, timestamp: string) {
-    const result = await this.voters.findOneAndUpdate(
+  async updateVerification(
+    id: string,
+    verification: Pick<Voter, "status" | "lastVerifiedAt">,
+  ): Promise<Voter | undefined> {
+    const updated = await this.voters.findOneAndUpdate(
       { id },
-      { $set: { status: "verified", lastVerifiedAt: timestamp } },
+      { $set: verification },
       { returnDocument: "after", projection: { _id: 0 } },
     );
-    return result ?? undefined;
+    return updated ?? undefined;
   }
 
-  async listActivities() {
-    return this.activities.find({}, { projection: { _id: 0 } }).sort({ timestamp: -1 }).limit(50).toArray();
+  async findClosest(descriptorToMatch: number[]): Promise<BiometricMatch | undefined> {
+    return closestMatch(await this.listVoters(), descriptorToMatch);
   }
 
-  async addActivity(activity: Activity) {
-    await this.activities.insertOne(activity);
+  async getVerificationMetadata(
+    voterId: string,
+  ): Promise<BiometricVerificationMetadata | undefined> {
+    const voter = await this.voters.findOne(
+      { id: voterId },
+      {
+        projection: {
+          _id: 0,
+          descriptor: 1,
+          lastVerifiedAt: 1,
+        },
+      },
+    );
+    return voter
+      ? {
+          descriptor: [...voter.descriptor],
+          lastVerifiedAt: voter.lastVerifiedAt,
+        }
+      : undefined;
+  }
+
+  async listElections(): Promise<Election[]> {
+    return this.elections
+      .find({}, { projection: { _id: 0 } })
+      .sort({ startAt: 1 })
+      .toArray();
+  }
+
+  async findElectionById(id: string): Promise<Election | undefined> {
+    return (
+      (await this.elections.findOne({ id }, { projection: { _id: 0 } })) ??
+      undefined
+    );
+  }
+
+  async createElection(election: Election): Promise<Election> {
+    await this.elections.insertOne(clone(election));
+    return clone(election);
+  }
+
+  async getStatus(): Promise<LedgerStatus> {
+    return clone(ledgerStatus);
+  }
+
+  async listActivities(): Promise<Activity[]> {
+    return this.activities
+      .find({}, { projection: { _id: 0 } })
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .toArray();
+  }
+
+  async createActivity(activity: Activity): Promise<Activity> {
+    await this.activities.insertOne(clone(activity));
+    return clone(activity);
   }
 
   async getDashboardCounts() {
-    const [activeVoters, activeElections, duplicateAttempts] = await Promise.all([
-      this.voters.countDocuments({ status: { $ne: "flagged" } }),
-      this.elections.countDocuments({ status: { $in: ["live", "scheduled"] } }),
-      this.activities.countDocuments({ status: "warning" }),
-    ]);
+    const [activeVoters, activeElections, duplicateAttempts] =
+      await Promise.all([
+        this.voters.countDocuments({ status: { $ne: "flagged" } }),
+        this.elections.countDocuments({ status: { $in: ["live", "scheduled"] } }),
+        this.activities.countDocuments({ status: "warning" }),
+      ]);
     return { activeVoters, activeElections, duplicateAttempts };
+  }
+
+  async close(): Promise<void> {
+    await this.client.close();
   }
 }
 
-export function createMatsetuStore(uri = process.env.MONGODB_URI): MatsetuStore {
-  return uri ? new MongoMatsetuStore(uri) : new MemoryMatsetuStore();
+const closestMatch = (
+  voters: Voter[],
+  descriptorToMatch: number[],
+): BiometricMatch | undefined =>
+  voters
+    .map((voter) => ({
+      voter,
+      score: distance(descriptorToMatch, voter.descriptor),
+    }))
+    .sort((left, right) => left.score - right.score)[0];
+
+const distance = (left: number[], right: number[]) =>
+  Math.sqrt(
+    left.reduce(
+      (sum, value, index) => sum + (value - (right[index] ?? 0)) ** 2,
+      0,
+    ),
+  );
+
+async function seedCollection<T extends { id: string }>(
+  collection: Collection<T>,
+  seeds: T[],
+): Promise<void> {
+  if ((await collection.countDocuments()) === 0) {
+    await collection.insertMany(
+      seeds.map(clone) as OptionalUnlessRequiredId<T>[],
+    );
+  }
 }
 
-export const matsetuStore = createMatsetuStore();
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function createId(prefix: string): string {
+  return `${prefix}-${randomUUID()}`;
+}
+
+export function createInMemoryMatSetuRepository(): MatSetuRepository {
+  return new InMemoryMatSetuRepository();
+}
+
+export async function createMatSetuRepository(
+  mongoUri = process.env["MONGODB_URI"],
+): Promise<MatSetuRepository> {
+  if (!mongoUri) {
+    return createInMemoryMatSetuRepository();
+  }
+  return MongoMatSetuRepository.connect(mongoUri);
+}
 
 export const getPublicVoter = (voter: Voter) => {
   const { descriptor: _descriptor, ...publicVoter } = voter;

@@ -21,14 +21,21 @@ services:
     ports:
       - "5000:5000"
     depends_on:
-      - mongo
-      - hardhat
+      mongo:
+        condition: service_healthy
+      hardhat:
+        condition: service_started
     networks:
       - voting_net
 
   mongo:
     image: mongo:7
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     volumes:
       - mongo_data:/data/db
     networks:
