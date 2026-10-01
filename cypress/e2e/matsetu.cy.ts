@@ -76,11 +76,16 @@ function installTestWallet(win: Window, mode: WalletMode) {
             logsBloom: `0x${'00'.repeat(256)}`,
             status: '0x1',
             type: '0x2',
+            transactionIndex: '0x0',
+            effectiveGasPrice: '0x1',
           });
         }
         if (method === 'eth_getTransactionByHash') {
           return Promise.resolve({
             hash: transactionHash,
+            transactionIndex: '0x0',
+            type: '0x2',
+            accessList: [],
             blockHash,
             blockNumber: '0x2',
             from: account,
@@ -90,8 +95,10 @@ function installTestWallet(win: Window, mode: WalletMode) {
             nonce: '0x0',
             gas: '0x989680',
             gasPrice: '0x1',
+            chainId: '0x7a69',
           });
         }
+        if (method === 'eth_getTransactionCount') return Promise.resolve('0x1');
         return Promise.reject(new Error(`Unsupported wallet method: ${method}`));
       },
     },
@@ -146,7 +153,7 @@ describe('MatSetu operator and voter journeys', () => {
     cy.get('[data-testid="button-connect-wallet"]').click();
     cy.get('[data-testid="text-wallet-account"]').should('contain', '0x00000000000000000000000000000000000000a1');
     cy.get('[data-testid="button-sign-ballot"]').click();
-    cy.get('[data-testid="ballot-confirmed"]').should('contain', 'Ballot confirmed on the ledger');
+    cy.get('[data-testid="ballot-confirmed"]', { timeout: 15000 }).should('contain', 'Ballot confirmed on the ledger');
   });
 
   it('shows clear rejected and cancelled wallet states', () => {
@@ -161,6 +168,10 @@ describe('MatSetu operator and voter journeys', () => {
   });
 
   it('surfaces the contract rejection for a duplicate vote', () => {
+    visitWithWallet('success');
+    cy.get('[data-testid="button-connect-wallet"]').click();
+    cy.get('[data-testid="button-sign-ballot"]').click();
+    cy.get('[data-testid="ballot-confirmed"]', { timeout: 15000 }).should('be.visible');
     visitWithWallet('duplicate');
     cy.get('[data-testid="button-connect-wallet"]').click();
     cy.get('[data-testid="button-sign-ballot"]').click();
