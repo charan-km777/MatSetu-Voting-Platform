@@ -1,2 +1,3 @@
 - [MatSetu infrastructure seams](matsetu-infrastructure.md) — keep identity data off-chain and make local infrastructure status replaceable through stable API contracts.
 - [Hardhat test isolation](hardhat-test-isolation.md) — the standalone blockchain package needs its own CommonJS TypeScript config instead of inheriting workspace ESM settings.
+- [MatSetu local-chain browser tests](matsetu-local-chain-e2e.md) — use a loopback-only Hardhat WebSocket wallet and verify real receipts on a disposable chain.

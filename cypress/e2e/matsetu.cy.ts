@@ -15,6 +15,24 @@ const liveElection = {
 
 type WalletMode = 'success' | 'connect-rejected' | 'sign-cancelled';
 
+type LocalChainInfo = {
+  rpcUrl: string;
+  wsUrl: string;
+  contractAddress: string;
+  voterAccount: string;
+};
+
+type BallotInspection = {
+  receipt: {
+    status: number | null;
+    from: string | null;
+    to: string | null;
+    blockNumber: number;
+  } | null;
+  voteCount: number;
+  hasVoted: boolean;
+};
+
 function installTestWallet(win: Window, mode: WalletMode) {
   const account = '0x00000000000000000000000000000000000000a1';
   const transactionHash = `0x${'11'.repeat(32)}`;
@@ -110,6 +128,80 @@ function installTestWallet(win: Window, mode: WalletMode) {
   });
 }
 
+function installLocalChainWallet(win: Window, chain: LocalChainInfo) {
+  let nextRequestId = 1;
+  let socket: WebSocket | undefined;
+  let connection: Promise<WebSocket> | undefined;
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+
+  const getSocket = () => {
+    if (socket?.readyState === WebSocket.OPEN) return Promise.resolve(socket);
+    if (connection) return connection;
+
+    connection = new Promise<WebSocket>((resolve, reject) => {
+      socket = new WebSocket(chain.wsUrl);
+      socket.onopen = () => resolve(socket!);
+      socket.onerror = () => reject(new Error('Could not connect to the disposable Hardhat wallet.'));
+      socket.onmessage = (event) => {
+        const response = JSON.parse(String(event.data)) as {
+          id: number;
+          result?: unknown;
+          error?: { code?: number; message?: string; data?: unknown };
+        };
+        const request = pending.get(response.id);
+        if (!request) return;
+        pending.delete(response.id);
+        if (response.error) {
+          request.reject(
+            Object.assign(new Error(response.error.message ?? 'Local wallet request failed.'), {
+              code: response.error.code,
+              data: response.error.data,
+            }),
+          );
+        } else {
+          request.resolve(response.result);
+        }
+      };
+      socket.onclose = () => {
+        connection = undefined;
+        socket = undefined;
+        for (const request of pending.values()) {
+          request.reject(new Error('The disposable Hardhat wallet connection closed.'));
+        }
+        pending.clear();
+      };
+    });
+    return connection;
+  };
+
+  Object.defineProperty(win, '__MATSETU_TEST_MODE__', { configurable: true, value: true });
+  Object.defineProperty(win, '__MATSETU_TEST_DESCRIPTOR__', {
+    configurable: true,
+    value: voterOneDescriptor,
+  });
+  Object.defineProperty(win, 'ethereum', {
+    configurable: true,
+    value: {
+      isMetaMask: true,
+      request: async ({ method, params = [] }: { method: string; params?: unknown[] }) => {
+        if (method === 'eth_requestAccounts' || method === 'eth_accounts') {
+          return [chain.voterAccount];
+        }
+
+        const id = nextRequestId++;
+        const activeSocket = await getSocket();
+        return new Promise((resolve, reject) => {
+          pending.set(id, { resolve, reject });
+          activeSocket.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+        });
+      },
+    },
+  });
+}
+
 function visitWithWallet(mode: WalletMode) {
   cy.intercept('GET', '/api/elections/election-student-council', liveElection).as('election');
   cy.visit('/elections/election-student-council', {
@@ -187,16 +279,73 @@ describe('MatSetu operator and voter journeys', () => {
     cy.get('[data-testid="ballot-cancelled"]').should('contain', 'Ballot signing was cancelled');
   });
 
-  it('surfaces the contract rejection for a duplicate vote', () => {
-    visitWithWallet('success');
-    verifyBallotIdentity();
-    cy.get('[data-testid="button-connect-wallet"]').click();
-    cy.get('[data-testid="button-sign-ballot"]').click();
-    cy.get('[data-testid="ballot-confirmed"]', { timeout: 15000 }).should('be.visible');
-    visitWithWallet('success');
-    verifyBallotIdentity();
-    cy.get('[data-testid="button-connect-wallet"]').click();
-    cy.get('[data-testid="button-sign-ballot"]').click();
-    cy.get('[data-testid="ballot-rejected"]').should('contain', 'already cast a ballot');
+  it('submits a real ballot to a disposable Hardhat chain and rejects a duplicate', () => {
+    cy.task<LocalChainInfo>('localChainInfo').then((chain) => {
+      const visitLocalElection = () => {
+        cy.intercept('GET', '/api/elections/election-student-council', (request) => {
+          delete request.headers['if-none-match'];
+          delete request.headers['if-modified-since'];
+          request.headers['cache-control'] = 'no-cache';
+          request.continue((response) => {
+            response.send({
+              ...response.body,
+              candidateCount: 2,
+              contractAddress: chain.contractAddress,
+              status: 'live',
+            });
+          });
+        }).as('localElection');
+        cy.visit('/elections/election-student-council', {
+          onBeforeLoad: (win) => installLocalChainWallet(win, chain),
+        });
+        cy.wait('@localElection').its('response.statusCode').should('eq', 200);
+        cy.get('[data-testid="ballot-panel"]').should('be.visible');
+      };
+
+      visitLocalElection();
+      verifyBallotIdentity();
+      cy.get('[data-testid="button-connect-wallet"]').click();
+      cy.get('[data-testid="text-wallet-account"]').should('contain', chain.voterAccount);
+      cy.get('[data-testid="button-sign-ballot"]').click();
+      cy.get('[data-testid="ballot-confirmed"]', { timeout: 15000 }).should('be.visible');
+
+      let firstTransactionHash = '';
+      cy.get('[data-testid="ballot-confirmed"] code')
+        .invoke('text')
+        .then((transactionHash) => {
+          firstTransactionHash = transactionHash.trim();
+          cy.task<BallotInspection>('inspectBallot', {
+            transactionHash: firstTransactionHash,
+            candidateId: 1,
+            voterAccount: chain.voterAccount,
+          }).then((inspection) => {
+            expect(inspection.receipt).not.to.equal(null);
+            expect(inspection.receipt?.status).to.equal(1);
+            expect(inspection.receipt?.from?.toLowerCase()).to.equal(chain.voterAccount.toLowerCase());
+            expect(inspection.receipt?.to?.toLowerCase()).to.equal(chain.contractAddress.toLowerCase());
+            expect(inspection.voteCount).to.equal(1);
+            expect(inspection.hasVoted).to.equal(true);
+          });
+        });
+
+      visitLocalElection();
+      verifyBallotIdentity();
+      cy.get('[data-testid="button-connect-wallet"]').click();
+      cy.get('[data-testid="button-sign-ballot"]').click();
+      cy.get('[data-testid="ballot-rejected"]', { timeout: 15000 })
+        .should('contain', 'already cast a ballot')
+        .then(() =>
+          cy.task<BallotInspection>('inspectBallot', {
+            transactionHash: firstTransactionHash,
+            candidateId: 1,
+            voterAccount: chain.voterAccount,
+          }),
+        )
+        .then((inspection) => {
+          expect(inspection.receipt?.status).to.equal(1);
+          expect(inspection.voteCount).to.equal(1);
+          expect(inspection.hasVoted).to.equal(true);
+        });
+    });
   });
 });
