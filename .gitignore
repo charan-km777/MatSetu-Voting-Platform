@@ -5,6 +5,9 @@ dist
 tmp
 out-tsc
 *.tsbuildinfo
+/blockchain/artifacts/
+/blockchain/cache/
+/typechain-types/
 .expo
 .expo-shared
 

@@ -225,13 +225,57 @@ function ElectionDetail() {
 }
 
 function BallotPanel({ election }: { election: Election }) {
+  const voters = useGetVoters();
+  const verifyIdentity = useVerifyVoter();
   const [account, setAccount] = useState('');
+  const [selectedVoterId, setSelectedVoterId] = useState('');
+  const [identityVerifiedFor, setIdentityVerifiedFor] = useState('');
+  const [descriptor, setDescriptor] = useState<number[] | null>(null);
+  const [identityResult, setIdentityResult] = useState<boolean | null>(null);
+  const [identityMessage, setIdentityMessage] = useState('');
   const [candidateId, setCandidateId] = useState(1);
   const [state, setState] = useState<'idle' | 'connecting' | 'ready' | 'signing' | 'confirmed' | 'rejected' | 'cancelled' | 'duplicate' | 'error'>('idle');
   const [message, setMessage] = useState('');
   const [transactionHash, setTransactionHash] = useState('');
   const contractReady = /^0x[a-fA-F0-9]{40}$/.test(election.contractAddress);
   const electionOpen = election.status === 'live';
+  const identityVerified = Boolean(selectedVoterId && identityVerifiedFor === selectedVoterId);
+
+  const chooseVoter = (id: string) => {
+    setSelectedVoterId(id);
+    setIdentityVerifiedFor('');
+    setIdentityResult(null);
+    setIdentityMessage('');
+    setDescriptor(null);
+    setAccount('');
+    setState('idle');
+    setMessage('');
+    setTransactionHash('');
+  };
+
+  const verifySelectedVoter = () => {
+    if (!selectedVoterId || !descriptor) return;
+    verifyIdentity.mutate(
+      { id: selectedVoterId, data: { descriptor } },
+      {
+        onSuccess: (result) => {
+          setDescriptor(null);
+          setIdentityResult(result.verified);
+          setIdentityVerifiedFor(result.verified ? selectedVoterId : '');
+          setIdentityMessage(
+            result.message ??
+              (result.verified ? 'Identity verified.' : 'The face sample did not match.'),
+          );
+        },
+        onError: () => {
+          setDescriptor(null);
+          setIdentityResult(false);
+          setIdentityVerifiedFor('');
+          setIdentityMessage('The verification service did not respond. Please try again.');
+        },
+      },
+    );
+  };
 
   const connect = async () => {
     setState('connecting');
@@ -251,7 +295,7 @@ function BallotPanel({ election }: { election: Election }) {
     setState('signing');
     setMessage('');
     try {
-      const result = await castBallot(election.contractAddress, candidateId);
+      const result = await castBallot(election.contractAddress, candidateId, account);
       setTransactionHash(result.hash);
       setAccount(result.account);
       setState('confirmed');
@@ -270,21 +314,59 @@ function BallotPanel({ election }: { election: Election }) {
           <h2 className="mt-4 font-display text-3xl font-semibold tracking-[-0.04em]">Sign one ballot.</h2>
           <p className="mt-2 max-w-xl text-xs leading-5 text-sidebar-foreground/60">Identity verification stays off-chain. MetaMask signs only the selected ballot transaction, and the contract blocks a second vote from the same wallet.</p>
         </div>
-        <StatusPill value={state === 'confirmed' ? 'confirmed' : account ? 'wallet connected' : 'wallet required'} tone={state === 'confirmed' ? 'green' : account ? 'blue' : 'amber'} />
+        <StatusPill value={state === 'confirmed' ? 'confirmed' : identityVerified ? (account ? 'wallet connected' : 'identity verified') : 'identity check required'} tone={state === 'confirmed' ? 'green' : account ? 'blue' : identityVerified ? 'green' : 'amber'} />
       </div>
     </div>
     <div className="grid gap-6 p-6 md:grid-cols-[1fr_0.9fr] md:p-8">
       <div>
-        <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Choose a candidate</div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {Array.from({ length: election.candidateCount }, (_, index) => index + 1).map((id) => <label key={id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${candidateId === id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/45'}`}><input className="sr-only" type="radio" name="ballot-candidate" value={id} checked={candidateId === id} onChange={() => setCandidateId(id)} data-testid={`ballot-candidate-${id}`} /><span className={`flex h-7 w-7 items-center justify-center rounded-lg font-mono text-[10px] ${candidateId === id ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>{String(id).padStart(2, '0')}</span>Candidate {String(id).padStart(2, '0')}</label>)}
+        <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Verify your identity</div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">Choose your registered record and verify with a live face sample. The descriptor is sent only to the verification API and is never included in the wallet transaction.</p>
+        <label className="mt-4 block">
+          <span className="mb-2 block text-xs font-bold">Registered voter</span>
+          <select
+            data-testid="select-ballot-voter"
+            value={selectedVoterId}
+            onChange={(event) => chooseVoter(event.target.value)}
+            disabled={voters.isLoading || voters.isError || state === 'signing' || state === 'confirmed'}
+            className="w-full rounded-xl border border-border bg-card px-3 py-3 text-sm"
+          >
+            <option value="">{voters.isLoading ? 'Loading voter records…' : 'Select your registered name'}</option>
+            {voters.data?.map((voter) => (
+              <option key={voter.id} value={voter.id}>
+                {voter.displayName} · {voter.identifier}
+              </option>
+            ))}
+          </select>
+        </label>
+        {voters.isError && <div className="mt-3"><InlineError message="Registered voters could not be loaded. Retry this page before continuing." /></div>}
+        {selectedVoterId && !identityVerified && <div className="mt-4 space-y-3">
+          <FaceCapture onCaptured={setDescriptor} purpose="verification" />
+          {verifyIdentity.isError && <InlineError message="Identity verification could not be completed." />}
+          <button
+            type="button"
+            data-testid="button-verify-ballot-identity"
+            onClick={verifySelectedVoter}
+            disabled={!descriptor || verifyIdentity.isPending}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/35 bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {verifyIdentity.isPending ? <><LoaderCircle size={15} className="animate-spin" /> Verifying identity…</> : 'Verify identity'}
+            <Fingerprint size={15} />
+          </button>
+        </div>}
+        {identityResult === false && identityMessage && <div data-testid="ballot-identity-failed" className="mt-3"><InlineError message={identityMessage} /></div>}
+        {identityVerified && <div data-testid="ballot-identity-verified" className="mt-4 flex items-center gap-2 rounded-xl bg-[#e8f3eb] p-3 text-xs font-semibold text-[#236448]"><CheckCircle2 size={16} /> {identityMessage || 'Identity verified. Continue with MetaMask.'}</div>}
+        <div className="mt-6 border-t border-border pt-5">
+          <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Choose a candidate</div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {Array.from({ length: election.candidateCount }, (_, index) => index + 1).map((id) => <label key={id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${candidateId === id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/45'}`}><input className="sr-only" type="radio" name="ballot-candidate" value={id} checked={candidateId === id} onChange={() => setCandidateId(id)} data-testid={`ballot-candidate-${id}`} /><span className={`flex h-7 w-7 items-center justify-center rounded-lg font-mono text-[10px] ${candidateId === id ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>{String(id).padStart(2, '0')}</span>Candidate {String(id).padStart(2, '0')}</label>)}
+          </div>
         </div>
       </div>
       <div className="rounded-2xl bg-secondary/70 p-4">
         <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Wallet status</div>
-        {account ? <div className="mt-3 rounded-xl bg-card p-3"><div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">Connected account</div><code data-testid="text-wallet-account" className="mt-2 block truncate text-xs font-semibold">{account}</code></div> : <p className="mt-3 text-xs leading-5 text-muted-foreground">Connect MetaMask before signing. The wallet address is the contract’s one-vote identity.</p>}
-        {!account && <button type="button" data-testid="button-connect-wallet" onClick={connect} disabled={state === 'connecting'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:opacity-50">{state === 'connecting' ? <><LoaderCircle size={15} className="animate-spin" /> Connecting…</> : 'Connect MetaMask'}</button>}
-        {account && <button type="button" data-testid="button-sign-ballot" onClick={sign} disabled={!contractReady || !electionOpen || state === 'signing' || state === 'confirmed'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{state === 'signing' ? <><LoaderCircle size={15} className="animate-spin" /> Waiting for signature…</> : state === 'confirmed' ? 'Ballot confirmed' : 'Sign and cast ballot'} <ShieldCheck size={15} /></button>}
+        {account ? <div className="mt-3 rounded-xl bg-card p-3"><div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">Connected account</div><code data-testid="text-wallet-account" className="mt-2 block truncate text-xs font-semibold">{account}</code></div> : <p className="mt-3 text-xs leading-5 text-muted-foreground">{identityVerified ? 'Connect MetaMask to authorize the ballot. The wallet address is the contract’s one-vote identity.' : 'Verify your identity before connecting a wallet to this ballot.'}</p>}
+        {!account && <button type="button" data-testid="button-connect-wallet" onClick={connect} disabled={!identityVerified || state === 'connecting'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{state === 'connecting' ? <><LoaderCircle size={15} className="animate-spin" /> Connecting…</> : 'Connect MetaMask'}</button>}
+        {account && <button type="button" data-testid="button-sign-ballot" onClick={sign} disabled={!identityVerified || !contractReady || !electionOpen || state === 'signing' || state === 'confirmed'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{state === 'signing' ? <><LoaderCircle size={15} className="animate-spin" /> Waiting for signature…</> : state === 'confirmed' ? 'Ballot confirmed' : 'Sign and cast ballot'} <ShieldCheck size={15} /></button>}
         {!contractReady && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">This election is not connected to a deployed contract yet.</p>}
         {!electionOpen && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">Ballot signing is available when the election is live.</p>}
         {state === 'confirmed' && <div data-testid="ballot-confirmed" className="mt-4 rounded-xl bg-[#e8f3eb] p-3 text-xs text-[#236448]"><div className="flex items-center gap-2 font-semibold"><CheckCircle2 size={15} /> Ballot confirmed on the ledger.</div><code className="mt-2 block truncate text-[10px]">{transactionHash}</code></div>}
@@ -418,7 +500,7 @@ function FaceCapture({ onCaptured, purpose }: { onCaptured: (descriptor: number[
       {capture === 'capturing' && <div className="absolute inset-0 flex items-center justify-center bg-sidebar/50 text-sidebar-foreground"><LoaderCircle className="animate-spin" size={28} /></div>}
     </div>
      {permission === 'idle' && <button type="button" data-testid={`button-start-camera-${purpose}`} onClick={startCamera} className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/35 bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary hover:border-primary"><Video size={15} /> Allow camera access</button>}
-     {window.__MATSETU_TEST_MODE__ && <button type="button" data-testid={`button-use-test-face-${purpose}`} onClick={useTestSample} className="w-full rounded-xl border border-dashed border-primary/45 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-primary hover:border-primary">Use deterministic test sample</button>}
+     {import.meta.env.DEV && window.__MATSETU_TEST_MODE__ && <button type="button" data-testid={`button-use-test-face-${purpose}`} onClick={useTestSample} className="w-full rounded-xl border border-dashed border-primary/45 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-primary hover:border-primary">Use deterministic test sample</button>}
     {permission === 'requesting' && <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" /> Requesting camera permission…</p>}
     {permission === 'denied' && <button type="button" data-testid={`button-retry-permission-${purpose}`} onClick={startCamera} className="w-full rounded-xl border border-border bg-card px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] hover:border-primary hover:text-primary">Try camera access again</button>}
     {permission === 'granted' && models === 'loading' && <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" /> Loading face verification models…</p>}

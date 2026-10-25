@@ -1,9 +1,9 @@
 FROM node:22-bookworm-slim
-WORKDIR /workspace/blockchain
+WORKDIR /workspace
 RUN corepack enable
-COPY blockchain/package.json blockchain/package.json
-COPY contracts contracts
-RUN pnpm install --no-frozen-lockfile
 COPY blockchain blockchain
+COPY contracts contracts
+WORKDIR /workspace/blockchain
+RUN pnpm install --ignore-workspace --no-lockfile
 EXPOSE 8545
 CMD ["pnpm", "run", "node"]

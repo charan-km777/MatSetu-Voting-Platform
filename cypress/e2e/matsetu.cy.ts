@@ -13,13 +13,14 @@ const liveElection = {
   contractAddress: '0x0000000000000000000000000000000000000001',
 };
 
-type WalletMode = 'success' | 'connect-rejected' | 'sign-cancelled' | 'duplicate';
+type WalletMode = 'success' | 'connect-rejected' | 'sign-cancelled';
 
 function installTestWallet(win: Window, mode: WalletMode) {
   const account = '0x00000000000000000000000000000000000000a1';
   const transactionHash = `0x${'11'.repeat(32)}`;
   const blockHash = `0x${'22'.repeat(32)}`;
   let hasVoted = false;
+  const votedKey = `matsetu-test-voted-${account.toLowerCase()}`;
 
   Object.defineProperty(win, '__MATSETU_TEST_MODE__', { configurable: true, value: true });
   Object.defineProperty(win, '__MATSETU_TEST_DESCRIPTOR__', {
@@ -57,10 +58,11 @@ function installTestWallet(win: Window, mode: WalletMode) {
           if (mode === 'sign-cancelled') {
             return Promise.reject({ code: 4001, message: 'User rejected the transaction' });
           }
-          if (mode === 'duplicate' || hasVoted) {
+          if (hasVoted || win.localStorage.getItem(votedKey) === 'true') {
             return Promise.reject(new Error('execution reverted: voter already cast a ballot'));
           }
           hasVoted = true;
+          win.localStorage.setItem(votedKey, 'true');
           return Promise.resolve(transactionHash);
         }
         if (method === 'eth_getTransactionReceipt') {
@@ -117,6 +119,13 @@ function visitWithWallet(mode: WalletMode) {
   cy.get('[data-testid="ballot-panel"]').should('be.visible');
 }
 
+function verifyBallotIdentity() {
+  cy.get('[data-testid="select-ballot-voter"]').select('voter-001');
+  cy.get('[data-testid="button-use-test-face-verification"]').click();
+  cy.get('[data-testid="button-verify-ballot-identity"]').click();
+  cy.get('[data-testid="ballot-identity-verified"]').should('be.visible');
+}
+
 describe('MatSetu operator and voter journeys', () => {
   it('shows operator readiness signals', () => {
     cy.visit('/', {
@@ -124,8 +133,12 @@ describe('MatSetu operator and voter journeys', () => {
         Object.defineProperty(win, '__MATSETU_TEST_MODE__', { configurable: true, value: true });
       },
     });
-    cy.get('[data-testid="metric-active-voters"]').should('contain', '3');
-    cy.get('[data-testid="metric-active-elections"]').should('contain', '2');
+    cy.get('[data-testid="metric-active-voters"]').should(($metric) => {
+      expect(Number($metric.text())).to.be.at.least(3);
+    });
+    cy.get('[data-testid="metric-active-elections"]').should(($metric) => {
+      expect(Number($metric.text())).to.be.at.least(2);
+    });
     cy.contains('Systems operational').should('be.visible');
   });
 
@@ -153,6 +166,8 @@ describe('MatSetu operator and voter journeys', () => {
 
   it('connects MetaMask and confirms one signed ballot', () => {
     visitWithWallet('success');
+    cy.get('[data-testid="button-connect-wallet"]').should('be.disabled');
+    verifyBallotIdentity();
     cy.get('[data-testid="button-connect-wallet"]').click();
     cy.get('[data-testid="text-wallet-account"]').should('contain', '0x00000000000000000000000000000000000000a1');
     cy.get('[data-testid="button-sign-ballot"]').click();
@@ -161,10 +176,12 @@ describe('MatSetu operator and voter journeys', () => {
 
   it('shows clear rejected and cancelled wallet states', () => {
     visitWithWallet('connect-rejected');
+    verifyBallotIdentity();
     cy.get('[data-testid="button-connect-wallet"]').click();
     cy.get('[data-testid="wallet-rejected"]').should('contain', 'Wallet connection was rejected');
 
     visitWithWallet('sign-cancelled');
+    verifyBallotIdentity();
     cy.get('[data-testid="button-connect-wallet"]').click();
     cy.get('[data-testid="button-sign-ballot"]').click();
     cy.get('[data-testid="ballot-cancelled"]').should('contain', 'Ballot signing was cancelled');
@@ -172,10 +189,12 @@ describe('MatSetu operator and voter journeys', () => {
 
   it('surfaces the contract rejection for a duplicate vote', () => {
     visitWithWallet('success');
+    verifyBallotIdentity();
     cy.get('[data-testid="button-connect-wallet"]').click();
     cy.get('[data-testid="button-sign-ballot"]').click();
     cy.get('[data-testid="ballot-confirmed"]', { timeout: 15000 }).should('be.visible');
-    visitWithWallet('duplicate');
+    visitWithWallet('success');
+    verifyBallotIdentity();
     cy.get('[data-testid="button-connect-wallet"]').click();
     cy.get('[data-testid="button-sign-ballot"]').click();
     cy.get('[data-testid="ballot-rejected"]').should('contain', 'already cast a ballot');

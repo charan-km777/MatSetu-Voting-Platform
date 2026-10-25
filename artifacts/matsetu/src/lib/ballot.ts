@@ -98,7 +98,11 @@ export const connectWallet = async () => {
   }
 };
 
-export const castBallot = async (contractAddress: string, candidateId: number) => {
+export const castBallot = async (
+  contractAddress: string,
+  candidateId: number,
+  expectedAccount: string,
+) => {
   if (!isAddress(contractAddress)) {
     throw new WalletFailure(
       'unavailable',
@@ -109,9 +113,16 @@ export const castBallot = async (contractAddress: string, candidateId: number) =
   try {
     const provider = new BrowserProvider(injectedProvider() as never);
     const signer = await provider.getSigner();
+    const activeAccount = await signer.getAddress();
+    if (activeAccount.toLowerCase() !== expectedAccount.toLowerCase()) {
+      throw new WalletFailure(
+        'unavailable',
+        'The active MetaMask account changed. Reconnect the wallet that passed identity verification.',
+      );
+    }
     const contract = new Contract(contractAddress, ELECTION_ABI, signer);
     const transaction = await contract.castVote(candidateId);
-    const receipt = await transaction.wait();
+    const receipt = await transaction.wait(1, 120_000);
     if (!receipt || receipt.status === 0) {
       throw new Error('The election contract did not confirm the ballot.');
     }
