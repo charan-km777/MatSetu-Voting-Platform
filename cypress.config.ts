@@ -17,6 +17,7 @@ type LocalChain = {
   wsUrl: string;
   contractAddress: string;
   voterAccount: string;
+  voterAccounts: string[];
 };
 
 type InspectBallotInput = {
@@ -111,16 +112,20 @@ async function startLocalChain() {
     if (!ready) throw new Error('The local Hardhat node did not become ready within 30 seconds.');
 
     const accounts = await rpcRequest<string[]>(rpcUrl, 'eth_accounts');
-    const voterAccount = accounts[1];
+    const voterAccounts = accounts.slice(1, 5);
+    const voterAccount = voterAccounts[0];
     if (!voterAccount) {
       throw new Error('The local Hardhat node did not provide its isolated test wallet.');
+    }
+    if (voterAccounts.length < 4) {
+      throw new Error('The local Hardhat node did not provide enough isolated test wallets.');
     }
 
     const administrator = accounts[0];
     if (!administrator) {
       throw new Error('The local Hardhat node did not provide its administrator account.');
     }
-    await execFileAsync('pnpm', ['run', 'compile'], {
+    await execFileAsync(path.join(blockchainDirectory, 'node_modules/.bin/hardhat'), ['compile'], {
       cwd: blockchainDirectory,
       env: {
         ...process.env,
@@ -157,6 +162,7 @@ async function startLocalChain() {
       wsUrl,
       contractAddress,
       voterAccount,
+      voterAccounts,
     };
     return localChain;
   } catch (error) {
