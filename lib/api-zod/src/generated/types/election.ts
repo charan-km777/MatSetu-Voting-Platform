@@ -16,4 +16,12 @@ export interface Election {
   startAt: Date;
   endAt: Date;
   contractAddress: string;
+  /** @nullable */
+  network: string | null;
+  /**
+     * @minimum 1
+     * @nullable
+     */
+  chainId: number | null;
+  isDemo: boolean;
 }

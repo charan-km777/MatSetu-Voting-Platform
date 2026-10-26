@@ -50,6 +50,14 @@ export interface Election {
   startAt: string;
   endAt: string;
   contractAddress: string;
+  /** @nullable */
+  network: string | null;
+  /**
+     * @minimum 1
+     * @nullable
+     */
+  chainId: number | null;
+  isDemo: boolean;
 }
 
 export interface ElectionInput {
@@ -57,6 +65,23 @@ export interface ElectionInput {
   title: string;
   startAt: string;
   endAt: string;
+}
+
+export interface ElectionContractInput {
+  /** @pattern ^0x[a-fA-F0-9]{40}$ */
+  contractAddress: string;
+  /**
+     * @minLength 2
+     * @maxLength 80
+     */
+  network: string;
+  /** @minimum 1 */
+  chainId: number;
+  /**
+     * @minimum 1
+     * @maximum 1000
+     */
+  candidateCount: number;
 }
 
 export type VoterStatus = typeof VoterStatus[keyof typeof VoterStatus];

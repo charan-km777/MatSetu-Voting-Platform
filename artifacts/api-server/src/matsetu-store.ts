@@ -19,6 +19,16 @@ export interface Election {
   startAt: string;
   endAt: string;
   contractAddress: string;
+  network: string | null;
+  chainId: number | null;
+  isDemo: boolean;
+}
+
+export interface ElectionContractConfiguration {
+  contractAddress: string;
+  network: string;
+  chainId: number;
+  candidateCount: number;
 }
 
 export interface Voter {
@@ -79,6 +89,10 @@ export interface ElectionRepository {
   listElections(): Promise<Election[]>;
   findElectionById(id: string): Promise<Election | undefined>;
   createElection(election: Election): Promise<Election>;
+  assignElectionContract(
+    id: string,
+    configuration: ElectionContractConfiguration,
+  ): Promise<Election | undefined>;
 }
 
 export interface LedgerStatusRepository {
@@ -114,23 +128,29 @@ function createSeedData() {
   const elections: Election[] = [
     {
       id: "election-student-council",
-      title: "2026 Student Council Election",
-      status: "live",
+      title: "2026 Student Council Election (demo)",
+      status: "draft",
       candidateCount: 6,
       voterCount: 1248,
       startAt: new Date(now - 1000 * 60 * 60 * 4).toISOString(),
       endAt: new Date(now + 1000 * 60 * 60 * 20).toISOString(),
-      contractAddress: "0x71C8...9a42",
+      contractAddress: "",
+      network: null,
+      chainId: null,
+      isDemo: true,
     },
     {
       id: "election-cse-rep",
-      title: "CSE Department Representative",
-      status: "scheduled",
+      title: "CSE Department Representative (demo)",
+      status: "draft",
       candidateCount: 4,
       voterCount: 386,
       startAt: new Date(now + 1000 * 60 * 60 * 48).toISOString(),
       endAt: new Date(now + 1000 * 60 * 60 * 72).toISOString(),
-      contractAddress: "0x2F10...6b0E",
+      contractAddress: "",
+      network: null,
+      chainId: null,
+      isDemo: true,
     },
   ];
 
@@ -212,6 +232,28 @@ const ledgerStatus: LedgerStatus = {
 
 const clone = <T>(value: T): T => structuredClone(value);
 
+function normalizeElection(election: Election): Election {
+  const network = election.network ?? null;
+  const chainId = election.chainId ?? null;
+  const hasDeployment =
+    /^0x[a-fA-F0-9]{40}$/.test(election.contractAddress) &&
+    typeof network === "string" &&
+    network.trim().length > 0 &&
+    typeof chainId === "number" &&
+    Number.isInteger(chainId) &&
+    chainId > 0;
+  const isDemo =
+    typeof election.isDemo === "boolean" ? election.isDemo : !hasDeployment;
+
+  return {
+    ...election,
+    network,
+    chainId,
+    isDemo,
+    status: isDemo && election.status !== "closed" ? "draft" : election.status,
+  };
+}
+
 class InMemoryMatSetuRepository implements MatSetuRepository {
   private readonly data = createSeedData();
 
@@ -272,6 +314,16 @@ class InMemoryMatSetuRepository implements MatSetuRepository {
     return clone(election);
   }
 
+  async assignElectionContract(
+    id: string,
+    configuration: ElectionContractConfiguration,
+  ): Promise<Election | undefined> {
+    const election = this.data.elections.find((candidate) => candidate.id === id);
+    if (!election) return undefined;
+    Object.assign(election, configuration, { isDemo: false });
+    return clone(election);
+  }
+
   async getStatus(): Promise<LedgerStatus> {
     return clone(ledgerStatus);
   }
@@ -290,7 +342,7 @@ class InMemoryMatSetuRepository implements MatSetuRepository {
       activeVoters: this.data.voters.filter((voter) => voter.status !== "flagged")
         .length,
       activeElections: this.data.elections.filter((election) =>
-        ["live", "scheduled"].includes(election.status),
+        !election.isDemo && ["live", "scheduled"].includes(election.status),
       ).length,
       duplicateAttempts: this.data.activities.filter(
         (activity) => activity.status === "warning",
@@ -425,22 +477,35 @@ class MongoMatSetuRepository implements MatSetuRepository {
   }
 
   async listElections(): Promise<Election[]> {
-    return this.elections
+    const elections = await this.elections
       .find({}, { projection: { _id: 0 } })
       .sort({ startAt: 1 })
       .toArray();
+    return elections.map(normalizeElection);
   }
 
   async findElectionById(id: string): Promise<Election | undefined> {
-    return (
+    const election =
       (await this.elections.findOne({ id }, { projection: { _id: 0 } })) ??
-      undefined
-    );
+      undefined;
+    return election ? normalizeElection(election) : undefined;
   }
 
   async createElection(election: Election): Promise<Election> {
     await this.elections.insertOne(clone(election));
     return clone(election);
+  }
+
+  async assignElectionContract(
+    id: string,
+    configuration: ElectionContractConfiguration,
+  ): Promise<Election | undefined> {
+    const updated = await this.elections.findOneAndUpdate(
+      { id },
+      { $set: { ...configuration, isDemo: false } },
+      { returnDocument: "after", projection: { _id: 0 } },
+    );
+    return updated ? normalizeElection(updated) : undefined;
   }
 
   async getStatus(): Promise<LedgerStatus> {
@@ -464,7 +529,14 @@ class MongoMatSetuRepository implements MatSetuRepository {
     const [activeVoters, activeElections, duplicateAttempts] =
       await Promise.all([
         this.voters.countDocuments({ status: { $ne: "flagged" } }),
-        this.elections.countDocuments({ status: { $in: ["live", "scheduled"] } }),
+        this.elections.countDocuments({
+          status: { $in: ["live", "scheduled"] },
+          isDemo: { $ne: true },
+          contractAddress: /^0x[a-fA-F0-9]{40}$/,
+          network: { $type: "string", $ne: "" },
+          chainId: { $gt: 0 },
+          candidateCount: { $gt: 0 },
+        }),
         this.activities.countDocuments({ status: "warning" }),
       ]);
     return { activeVoters, activeElections, duplicateAttempts };

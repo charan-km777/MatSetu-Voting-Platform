@@ -8,9 +8,9 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import {
-  getGetActivityQueryKey, getGetDashboardSummaryQueryKey, getGetElectionsQueryKey,
+  getGetActivityQueryKey, getGetDashboardSummaryQueryKey, getGetElectionQueryKey, getGetElectionsQueryKey,
   getGetLedgerStatusQueryKey, getGetVotersQueryKey, getHealthCheckQueryKey,
-  useCreateElection, useGetActivity, useGetDashboardSummary, useGetElection,
+  useConfigureElectionContract, useCreateElection, useGetActivity, useGetDashboardSummary, useGetElection,
   useGetElections, useGetLedgerStatus, useGetVoters, useHealthCheck, useRegisterVoter,
   useVerifyVoter,
 } from '@workspace/api-client-react';
@@ -19,7 +19,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { castBallot, connectWallet, type WalletFailure } from '@/lib/ballot';
+import { castBallot, connectWallet, loadBallotCandidates, type WalletFailure } from '@/lib/ballot';
 
 const queryClient = new QueryClient();
 
@@ -176,7 +176,7 @@ function ElectionsPage() {
 }
 
 function ElectionCard({ election }: { election: Election }) {
-  return <Link href={`/elections/${election.id}`} data-testid={`card-election-${election.id}`} className="group rounded-2xl border border-border bg-card p-5 shadow-sm hover:-translate-y-1 hover:border-primary/40 hover:shadow-md"><div className="flex items-start justify-between gap-4"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-secondary font-display text-base font-semibold text-primary">{election.title.split(' ').map((w) => w[0]).slice(0, 2).join('')}</div><StatusPill value={election.status} /></div><h2 className="mt-6 font-display text-2xl font-semibold tracking-[-0.03em]">{election.title}</h2><div className="mt-5 grid grid-cols-3 gap-3 border-t border-border pt-4"><DataPair label="Candidates" value={election.candidateCount} /><DataPair label="Voters" value={election.voterCount} /><DataPair label="Starts" value={formatDate(election.startAt)} /></div><div className="mt-5 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground group-hover:text-primary">Inspect ballot <ArrowUpRight size={15} /></div></Link>;
+  return <Link href={`/elections/${election.id}`} data-testid={`card-election-${election.id}`} className="group rounded-2xl border border-border bg-card p-5 shadow-sm hover:-translate-y-1 hover:border-primary/40 hover:shadow-md"><div className="flex items-start justify-between gap-4"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-secondary font-display text-base font-semibold text-primary">{election.title.split(' ').map((w) => w[0]).slice(0, 2).join('')}</div><div className="flex flex-wrap justify-end gap-2">{election.isDemo && <StatusPill value="demo" tone="amber" />}<StatusPill value={election.status} /></div></div><h2 className="mt-6 font-display text-2xl font-semibold tracking-[-0.03em]">{election.title}</h2><div className="mt-5 grid grid-cols-3 gap-3 border-t border-border pt-4"><DataPair label="Candidates" value={election.candidateCount} /><DataPair label="Voters" value={election.voterCount} /><DataPair label="Starts" value={formatDate(election.startAt)} /></div><div className="mt-5 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground group-hover:text-primary">Inspect ballot <ArrowUpRight size={15} /></div></Link>;
 }
 
 function ElectionDetail() {
@@ -196,10 +196,11 @@ function ElectionDetail() {
           <div>
             <div className="flex items-center gap-3">
               <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-primary">Election brief</span>
+              {election.isDemo && <StatusPill value="demo record" tone="amber" />}
               <StatusPill value={election.status} />
             </div>
             <h1 data-testid="text-election-title" className="mt-5 max-w-3xl font-display text-4xl font-semibold tracking-[-0.05em] md:text-6xl">{election.title}</h1>
-            <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">This ballot is represented on the local ledger and ready for operational review.</p>
+            <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">{election.isDemo ? 'This sample record is for demonstration only. It is not live and cannot accept a ballot.' : 'Configure a deployed contract before voters can submit a ballot.'}</p>
           </div>
           <div className="rounded-2xl bg-secondary p-4 md:min-w-[220px]">
             <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">Ballot window</div>
@@ -207,21 +208,116 @@ function ElectionDetail() {
             <div className="text-xs text-muted-foreground">{formatTime(election.startAt)} — {formatTime(election.endAt)}</div>
           </div>
         </div>
-        <div className="mt-10 grid gap-4 border-t border-border pt-6 sm:grid-cols-3">
+        <div className="mt-10 grid gap-4 border-t border-border pt-6 sm:grid-cols-4">
           <DataPair label="Candidates" value={election.candidateCount} large />
           <DataPair label="Registered voters" value={election.voterCount} large />
+          <DataPair label="Network" value={election.network ? `${election.network} · ${election.chainId}` : 'Not configured'} large />
           <div>
             <div className="font-mono text-[9px] uppercase tracking-[0.15em] text-muted-foreground">Contract address</div>
             <div className="mt-2 flex items-center gap-2">
-              <code className="max-w-[200px] truncate text-xs font-semibold">{election.contractAddress || 'Not deployed'}</code>
+              <code className="max-w-[240px] break-all text-xs font-semibold">{election.contractAddress || 'Not deployed'}</code>
               {election.contractAddress && <button data-testid="button-copy-contract" aria-label="Copy contract address" onClick={() => navigator.clipboard?.writeText(election.contractAddress)} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"><Copy size={14} /></button>}
             </div>
           </div>
         </div>
       </div>
+      <ElectionContractSettings election={election} />
       <BallotPanel election={election} />
     </div>
   );
+}
+
+function ElectionContractSettings({ election }: { election: Election }) {
+  const configure = useConfigureElectionContract();
+  const client = useQueryClient();
+  const contractIsAssigned = !election.isDemo &&
+    /^0x[a-fA-F0-9]{40}$/.test(election.contractAddress) &&
+    Boolean(election.network) &&
+    Number.isInteger(election.chainId) &&
+    (election.chainId ?? 0) > 0;
+  const [expanded, setExpanded] = useState(!contractIsAssigned);
+  const [contractAddress, setContractAddress] = useState(election.contractAddress);
+  const [network, setNetwork] = useState(election.network ?? 'Hardhat local');
+  const [chainId, setChainId] = useState(election.chainId?.toString() ?? '31337');
+  const [candidateCount, setCandidateCount] = useState(
+    election.candidateCount > 0 ? election.candidateCount.toString() : '',
+  );
+
+  useEffect(() => {
+    setContractAddress(election.contractAddress);
+    setNetwork(election.network ?? 'Hardhat local');
+    setChainId(election.chainId?.toString() ?? '31337');
+    setCandidateCount(election.candidateCount > 0 ? election.candidateCount.toString() : '');
+  }, [election]);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const parsedChainId = Number(chainId);
+    const parsedCandidateCount = Number(candidateCount);
+    if (!Number.isSafeInteger(parsedChainId) || !Number.isSafeInteger(parsedCandidateCount)) return;
+
+    configure.mutate(
+      {
+        id: election.id,
+        data: {
+          contractAddress: contractAddress.trim(),
+          network: network.trim(),
+          chainId: parsedChainId,
+          candidateCount: parsedCandidateCount,
+        },
+      },
+      {
+        onSuccess: () => {
+          client.invalidateQueries({ queryKey: getGetElectionQueryKey(election.id) });
+          client.invalidateQueries({ queryKey: getGetElectionsQueryKey() });
+          setExpanded(false);
+        },
+      },
+    );
+  };
+
+  return <section className="mt-6 rounded-3xl border border-border bg-card p-6 shadow-sm md:p-8" data-testid="election-contract-settings">
+    <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+      <div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-primary">Operator setup</div>
+        <h2 className="mt-2 font-display text-2xl font-semibold tracking-[-0.03em]">Ballot contract</h2>
+        <p className="mt-2 max-w-2xl text-xs leading-5 text-muted-foreground">Deploy the Election contract with the election title and candidate list, then assign its full address and network details here.</p>
+      </div>
+      {contractIsAssigned && !expanded && <button type="button" onClick={() => setExpanded(true)} className="rounded-lg border border-border px-4 py-2 text-xs font-bold text-primary hover:bg-secondary">Update deployment</button>}
+    </div>
+
+    {election.isDemo ? (
+      <div className="mt-5 rounded-xl border border-[#e4c98e] bg-[#fff8e8] p-4 text-xs leading-5 text-[#79551d]">
+        This demo record is locked to sample data and cannot be connected to a live ballot. Create a new election to configure a deployment.
+      </div>
+    ) : contractIsAssigned && !expanded ? (
+      <div className="mt-5 grid gap-4 rounded-xl bg-secondary/70 p-4 sm:grid-cols-3">
+        <DataPair label="Network" value={election.network ?? 'Not configured'} />
+        <DataPair label="Chain ID" value={election.chainId ?? 'Not configured'} />
+        <DataPair label="Configured candidates" value={election.candidateCount} />
+      </div>
+    ) : (
+      <form onSubmit={submit} className="mt-5 space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Full contract address" hint="Use the complete 0x-prefixed address printed by the deployment command.">
+            <input required pattern="^0x[a-fA-F0-9]{40}$" data-testid="input-contract-address" value={contractAddress} onChange={(event) => setContractAddress(event.target.value)} placeholder="0x…" autoComplete="off" />
+          </Field>
+          <Field label="Network name" hint="For example, Hardhat local or Sepolia.">
+            <input required minLength={2} maxLength={80} data-testid="input-contract-network" value={network} onChange={(event) => setNetwork(event.target.value)} placeholder="Hardhat local" />
+          </Field>
+          <Field label="Chain ID">
+            <input required type="number" min={1} step={1} data-testid="input-contract-chain-id" value={chainId} onChange={(event) => setChainId(event.target.value)} />
+          </Field>
+          <Field label="Candidate count" hint="Must match the candidates installed in the deployed contract.">
+            <input required type="number" min={1} max={1000} step={1} data-testid="input-contract-candidate-count" value={candidateCount} onChange={(event) => setCandidateCount(event.target.value)} />
+          </Field>
+        </div>
+        <p className="text-[11px] leading-5 text-muted-foreground">Deploy with <code>ELECTION_TITLE</code> and <code>ELECTION_CANDIDATES</code>, then copy the printed address and chain ID. The election page checks that MetaMask is on this network and that the deployed contract is open with the configured number of candidates.</p>
+        {configure.isError && <InlineError message="The deployment details could not be saved. Verify the address, network, chain ID, and candidate count." />}
+        <button disabled={configure.isPending || election.isDemo} data-testid="button-assign-contract" className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:opacity-50">{configure.isPending ? 'Saving deployment…' : 'Assign deployed contract'} <ArrowUpRight size={15} /></button>
+      </form>
+    )}
+  </section>;
 }
 
 function BallotPanel({ election }: { election: Election }) {
@@ -234,12 +330,60 @@ function BallotPanel({ election }: { election: Election }) {
   const [identityResult, setIdentityResult] = useState<boolean | null>(null);
   const [identityMessage, setIdentityMessage] = useState('');
   const [candidateId, setCandidateId] = useState(1);
+  const [contractCandidates, setContractCandidates] = useState<string[]>([]);
+  const [candidateLoadError, setCandidateLoadError] = useState('');
+  const [candidateLoading, setCandidateLoading] = useState(false);
   const [state, setState] = useState<'idle' | 'connecting' | 'ready' | 'signing' | 'confirmed' | 'rejected' | 'cancelled' | 'duplicate' | 'error'>('idle');
   const [message, setMessage] = useState('');
   const [transactionHash, setTransactionHash] = useState('');
-  const contractReady = /^0x[a-fA-F0-9]{40}$/.test(election.contractAddress);
-  const electionOpen = election.status === 'live';
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
+  const contractConfigured = !election.isDemo &&
+    /^0x[a-fA-F0-9]{40}$/.test(election.contractAddress) &&
+    Boolean(election.network) &&
+    Number.isSafeInteger(election.chainId) &&
+    (election.chainId ?? 0) > 0 &&
+    election.candidateCount > 0;
+  const contractReady = contractConfigured && contractCandidates.length === election.candidateCount;
+  const electionOpen = election.status !== 'closed' &&
+    now >= new Date(election.startAt).getTime() &&
+    now <= new Date(election.endAt).getTime();
   const identityVerified = Boolean(selectedVoterId && identityVerifiedFor === selectedVoterId);
+
+  useEffect(() => {
+    let active = true;
+    setContractCandidates([]);
+    setCandidateLoadError('');
+    if (!contractConfigured || !election.chainId) {
+      setCandidateLoading(false);
+      return () => { active = false; };
+    }
+
+    setCandidateLoading(true);
+    loadBallotCandidates(
+      election.contractAddress,
+      election.chainId,
+      election.candidateCount,
+    ).then((names) => {
+      if (active) setContractCandidates(names);
+    }).catch((cause: unknown) => {
+      if (active) {
+        setCandidateLoadError(cause instanceof Error ? cause.message : 'Could not read candidates from the election contract.');
+      }
+    }).finally(() => {
+      if (active) setCandidateLoading(false);
+    });
+    return () => { active = false; };
+  }, [contractConfigured, election.contractAddress, election.chainId, election.candidateCount]);
+
+  useEffect(() => {
+    if (candidateId > contractCandidates.length && contractCandidates.length > 0) {
+      setCandidateId(1);
+    }
+  }, [candidateId, contractCandidates]);
 
   const chooseVoter = (id: string) => {
     setSelectedVoterId(id);
@@ -295,7 +439,17 @@ function BallotPanel({ election }: { election: Election }) {
     setState('signing');
     setMessage('');
     try {
-      const result = await castBallot(election.contractAddress, candidateId, account);
+      if (!election.chainId || !election.network) {
+        throw new Error('Election network configuration is missing.');
+      }
+      const result = await castBallot(
+        election.contractAddress,
+        candidateId,
+        account,
+        election.chainId,
+        election.network,
+        contractCandidates,
+      );
       setTransactionHash(result.hash);
       setAccount(result.account);
       setState('confirmed');
@@ -358,7 +512,7 @@ function BallotPanel({ election }: { election: Election }) {
         <div className="mt-6 border-t border-border pt-5">
           <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Choose a candidate</div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {Array.from({ length: election.candidateCount }, (_, index) => index + 1).map((id) => <label key={id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${candidateId === id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/45'}`}><input className="sr-only" type="radio" name="ballot-candidate" value={id} checked={candidateId === id} onChange={() => setCandidateId(id)} data-testid={`ballot-candidate-${id}`} /><span className={`flex h-7 w-7 items-center justify-center rounded-lg font-mono text-[10px] ${candidateId === id ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>{String(id).padStart(2, '0')}</span>Candidate {String(id).padStart(2, '0')}</label>)}
+            {Array.from({ length: election.candidateCount }, (_, index) => index + 1).map((id) => <label key={id} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${candidateId === id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/45'}`}><input className="sr-only" type="radio" name="ballot-candidate" value={id} checked={candidateId === id} onChange={() => setCandidateId(id)} data-testid={`ballot-candidate-${id}`} /><span className={`flex h-7 w-7 items-center justify-center rounded-lg font-mono text-[10px] ${candidateId === id ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>{String(id).padStart(2, '0')}</span>{contractReady ? contractCandidates[id - 1] : `Candidate ${String(id).padStart(2, '0')}`}</label>)}
           </div>
         </div>
       </div>
@@ -367,8 +521,8 @@ function BallotPanel({ election }: { election: Election }) {
         {account ? <div className="mt-3 rounded-xl bg-card p-3"><div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">Connected account</div><code data-testid="text-wallet-account" className="mt-2 block truncate text-xs font-semibold">{account}</code></div> : <p className="mt-3 text-xs leading-5 text-muted-foreground">{identityVerified ? 'Connect MetaMask to authorize the ballot. The wallet address is the contract’s one-vote identity.' : 'Verify your identity before connecting a wallet to this ballot.'}</p>}
         {!account && <button type="button" data-testid="button-connect-wallet" onClick={connect} disabled={!identityVerified || state === 'connecting'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{state === 'connecting' ? <><LoaderCircle size={15} className="animate-spin" /> Connecting…</> : 'Connect MetaMask'}</button>}
         {account && <button type="button" data-testid="button-sign-ballot" onClick={sign} disabled={!identityVerified || !contractReady || !electionOpen || state === 'signing' || state === 'confirmed'} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-xs font-bold uppercase tracking-[0.1em] text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{state === 'signing' ? <><LoaderCircle size={15} className="animate-spin" /> Waiting for signature…</> : state === 'confirmed' ? 'Ballot confirmed' : 'Sign and cast ballot'} <ShieldCheck size={15} /></button>}
-        {!contractReady && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">This election is not connected to a deployed contract yet.</p>}
-        {!electionOpen && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">Ballot signing is available when the election is live.</p>}
+        {!contractReady && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">{election.isDemo ? 'Demo records cannot accept ballots.' : candidateLoadError || (candidateLoading ? 'Reading candidate details from the configured network…' : 'This election needs a deployed contract and readable candidates before it can accept ballots.')}</p>}
+        {!electionOpen && <p className="mt-3 text-[11px] leading-4 text-[#91601d]">Ballot signing is available only during the scheduled election window.</p>}
         {state === 'confirmed' && <div data-testid="ballot-confirmed" className="mt-4 rounded-xl bg-[#e8f3eb] p-3 text-xs text-[#236448]"><div className="flex items-center gap-2 font-semibold"><CheckCircle2 size={15} /> Ballot confirmed on the ledger.</div><code className="mt-2 block truncate text-[10px]">{transactionHash}</code></div>}
         {state === 'rejected' && <div data-testid="wallet-rejected" className="mt-4"><InlineError message={message} /></div>}
         {state === 'cancelled' && <div data-testid="ballot-cancelled" className="mt-4"><InlineError message={message} /></div>}

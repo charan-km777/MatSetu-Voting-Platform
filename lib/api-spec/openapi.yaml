@@ -96,6 +96,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+  /elections/{id}/contract:
+    patch:
+      operationId: configureElectionContract
+      tags: [elections]
+      summary: Assign a deployed ballot contract to an election
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ElectionContractInput"
+      responses:
+        "200":
+          description: Election with its deployed ballot contract
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Election"
+        "400":
+          description: Invalid deployment configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Election not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Demo elections cannot be assigned a ballot contract
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /voters:
     get:
       operationId: getVoters
@@ -228,7 +266,7 @@ components:
           enum: [operational, attention, offline]
     Election:
       type: object
-      required: [id, title, status, candidateCount, voterCount, startAt, endAt, contractAddress]
+      required: [id, title, status, candidateCount, voterCount, startAt, endAt, contractAddress, network, chainId, isDemo]
       properties:
         id:
           type: string
@@ -249,6 +287,13 @@ components:
           format: date-time
         contractAddress:
           type: string
+        network:
+          type: ["string", "null"]
+        chainId:
+          type: ["integer", "null"]
+          minimum: 1
+        isDemo:
+          type: boolean
     ElectionInput:
       type: object
       required: [title, startAt, endAt]
@@ -262,6 +307,24 @@ components:
         endAt:
           type: string
           format: date-time
+    ElectionContractInput:
+      type: object
+      required: [contractAddress, network, chainId, candidateCount]
+      properties:
+        contractAddress:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+        network:
+          type: string
+          minLength: 2
+          maxLength: 80
+        chainId:
+          type: integer
+          minimum: 1
+        candidateCount:
+          type: integer
+          minimum: 1
+          maximum: 1000
     Voter:
       type: object
       required: [id, displayName, identifier, status, registeredAt, lastVerifiedAt]

@@ -1,5 +1,7 @@
 import { Router, type IRouter } from "express";
 import {
+  ConfigureElectionContractBody,
+  ConfigureElectionContractParams,
   CreateElectionBody,
   GetElectionParams,
   GetElectionsResponse,
@@ -66,7 +68,10 @@ export const createMatSetuRouter = (repository: MatSetuRepository): IRouter => {
       voterCount: 0,
       startAt: new Date(input.data.startAt).toISOString(),
       endAt: new Date(input.data.endAt).toISOString(),
-      contractAddress: "pending deployment",
+      contractAddress: "",
+      network: null,
+      chainId: null,
+      isDemo: false,
     };
     const savedElection = await repository.createElection(election);
     await repository.createActivity({
@@ -78,6 +83,48 @@ export const createMatSetuRouter = (repository: MatSetuRepository): IRouter => {
       status: "pending",
     });
     res.status(201).json(GetElectionResponse.parse(savedElection));
+  });
+
+  router.patch("/elections/:id/contract", async (req, res) => {
+    const params = ConfigureElectionContractParams.safeParse(req.params);
+    const input = ConfigureElectionContractBody.safeParse(req.body);
+    if (!params.success || !input.success) {
+      res.status(400).json({
+        error:
+          "Provide a full EVM contract address, network name, chain ID, and candidate count.",
+      });
+      return;
+    }
+
+    const existingElection = await repository.findElectionById(params.data.id);
+    if (!existingElection) {
+      res.status(404).json({ error: "Election not found." });
+      return;
+    }
+    if (existingElection.isDemo) {
+      res.status(409).json({
+        error: "Demo elections cannot be connected to a ballot contract.",
+      });
+      return;
+    }
+
+    const election = await repository.assignElectionContract(
+      params.data.id,
+      input.data,
+    );
+    if (!election) {
+      res.status(404).json({ error: "Election not found." });
+      return;
+    }
+    await repository.createActivity({
+      id: createId("activity"),
+      type: "election",
+      label: "Ballot contract assigned",
+      detail: `${election.title} is connected to ${election.network} (chain ${election.chainId})`,
+      timestamp: new Date().toISOString(),
+      status: "success",
+    });
+    res.json(GetElectionResponse.parse(election));
   });
 
   router.get("/elections/:id", async (req, res) => {

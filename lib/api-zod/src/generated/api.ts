@@ -32,6 +32,9 @@ export const GetDashboardSummaryResponse = zod.object({
 /**
  * @summary List elections
  */
+
+
+
 export const GetElectionsResponseItem = zod.object({
   "id": zod.string(),
   "title": zod.string(),
@@ -40,7 +43,10 @@ export const GetElectionsResponseItem = zod.object({
   "voterCount": zod.number().int(),
   "startAt": zod.coerce.date(),
   "endAt": zod.coerce.date(),
-  "contractAddress": zod.string()
+  "contractAddress": zod.string(),
+  "network": zod.string().nullable(),
+  "chainId": zod.number().int().min(1).nullable(),
+  "isDemo": zod.boolean()
 })
 export const GetElectionsResponse = zod.array(GetElectionsResponseItem)
 
@@ -58,6 +64,9 @@ export const CreateElectionBody = zod.object({
   "endAt": zod.coerce.date()
 })
 
+
+
+
 export const CreateElectionResponse = zod.object({
   "id": zod.string(),
   "title": zod.string(),
@@ -66,7 +75,10 @@ export const CreateElectionResponse = zod.object({
   "voterCount": zod.number().int(),
   "startAt": zod.coerce.date(),
   "endAt": zod.coerce.date(),
-  "contractAddress": zod.string()
+  "contractAddress": zod.string(),
+  "network": zod.string().nullable(),
+  "chainId": zod.number().int().min(1).nullable(),
+  "isDemo": zod.boolean()
 })
 
 
@@ -77,6 +89,9 @@ export const GetElectionParams = zod.object({
   "id": zod.coerce.string()
 })
 
+
+
+
 export const GetElectionResponse = zod.object({
   "id": zod.string(),
   "title": zod.string(),
@@ -85,7 +100,51 @@ export const GetElectionResponse = zod.object({
   "voterCount": zod.number().int(),
   "startAt": zod.coerce.date(),
   "endAt": zod.coerce.date(),
-  "contractAddress": zod.string()
+  "contractAddress": zod.string(),
+  "network": zod.string().nullable(),
+  "chainId": zod.number().int().min(1).nullable(),
+  "isDemo": zod.boolean()
+})
+
+
+/**
+ * @summary Assign a deployed ballot contract to an election
+ */
+export const ConfigureElectionContractParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const configureElectionContractBodyContractAddressRegExp = new RegExp('^0x[a-fA-F0-9]{40}$');
+export const configureElectionContractBodyNetworkMin = 2;
+export const configureElectionContractBodyNetworkMax = 80;
+
+
+export const configureElectionContractBodyCandidateCountMax = 1000;
+
+
+
+export const ConfigureElectionContractBody = zod.object({
+  "contractAddress": zod.string().regex(configureElectionContractBodyContractAddressRegExp),
+  "network": zod.string().min(configureElectionContractBodyNetworkMin).max(configureElectionContractBodyNetworkMax),
+  "chainId": zod.number().int().min(1),
+  "candidateCount": zod.number().int().min(1).max(configureElectionContractBodyCandidateCountMax)
+})
+
+
+
+
+export const ConfigureElectionContractResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "status": zod.enum(['draft', 'scheduled', 'live', 'closed']),
+  "candidateCount": zod.number().int(),
+  "voterCount": zod.number().int(),
+  "startAt": zod.coerce.date(),
+  "endAt": zod.coerce.date(),
+  "contractAddress": zod.string(),
+  "network": zod.string().nullable(),
+  "chainId": zod.number().int().min(1).nullable(),
+  "isDemo": zod.boolean()
 })
 
 

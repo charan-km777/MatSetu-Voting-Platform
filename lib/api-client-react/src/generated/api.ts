@@ -25,6 +25,7 @@ import type {
   BiometricVerificationInput,
   DashboardSummary,
   Election,
+  ElectionContractInput,
   ElectionInput,
   HealthStatus,
   LedgerStatus,
@@ -455,6 +456,95 @@ export function useGetElection<TData = Awaited<ReturnType<typeof getElection>>, 
 
 
 
+
+export const getConfigureElectionContractUrl = (id: string,) => {
+
+
+
+
+  return `/api/elections/${id}/contract`
+}
+
+/**
+ * @summary Assign a deployed ballot contract to an election
+ */
+export const configureElectionContract = async (id: string,
+    electionContractInput: ElectionContractInput, options?: Parameters<typeof customFetch>[1]): Promise<Election> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<Election>(getConfigureElectionContractUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(electionContractInput)
+  }
+);}
+
+
+
+
+
+export const getConfigureElectionContractMutationKey = () => ['configureElectionContract'] as const;
+
+export const getConfigureElectionContractMutationOptions = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof configureElectionContract>>, TError,ConfigureElectionContractMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof configureElectionContract>>, TError,ConfigureElectionContractMutationVariables, TContext> => {
+
+const mutationKey = getConfigureElectionContractMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof configureElectionContract>>, ConfigureElectionContractMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  configureElectionContract(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ConfigureElectionContractMutationResult = NonNullable<Awaited<ReturnType<typeof configureElectionContract>>>
+    export type ConfigureElectionContractMutationBody = BodyType<ElectionContractInput>
+    export type ConfigureElectionContractMutationError = ErrorType<ApiError>
+    export type ConfigureElectionContractMutationVariables = {id: string;data: BodyType<ElectionContractInput>}
+
+    /**
+ * @summary Assign a deployed ballot contract to an election
+ */
+export const useConfigureElectionContract = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof configureElectionContract>>, TError,ConfigureElectionContractMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof configureElectionContract>>,
+        TError,
+        ConfigureElectionContractMutationVariables,
+        TContext
+      > => {
+      return useMutation(getConfigureElectionContractMutationOptions(options));
+    }
 
 export const getGetVotersUrl = () => {
 

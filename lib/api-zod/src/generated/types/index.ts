@@ -14,6 +14,7 @@ export * from './biometricVerificationInput';
 export * from './dashboardSummary';
 export * from './dashboardSummarySystemStatus';
 export * from './election';
+export * from './electionContractInput';
 export * from './electionInput';
 export * from './electionStatus';
 export * from './healthStatus';

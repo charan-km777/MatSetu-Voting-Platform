@@ -37,6 +37,9 @@ contract Election {
     }
 
     function setVotingOpen(bool open) external onlyAdministrator {
+        if (open) {
+            require(candidateCount > 0, "candidates required");
+        }
         votingOpen = open;
     }
 

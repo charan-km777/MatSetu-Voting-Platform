@@ -38,4 +38,16 @@ describe("Election", () => {
     assert.equal((await election.candidates(1)).voteCount, 1n);
     assert.equal((await election.candidates(2)).voteCount, 1n);
   });
+
+  it("cannot be opened before candidates are configured", async () => {
+    const [administrator] = await ethers.getSigners();
+    const election = await ethers.deployContract("Election", ["Unconfigured election"]);
+    await election.waitForDeployment();
+
+    await assert.rejects(
+      election.connect(administrator).setVotingOpen(true),
+      /candidates required/,
+    );
+    assert.equal(await election.votingOpen(), false);
+  });
 });
