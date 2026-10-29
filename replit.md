@@ -57,3 +57,21 @@ No additional user preferences recorded.
 
 - See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
 - See `docker-compose.yml` for the containerized Phase 1 topology
+
+## Local Windows development
+
+Run the API server and client in separate PowerShell windows from the workspace root:
+
+```powershell
+$env:PORT = "5000"
+pnpm --filter @workspace/api-server run dev
+```
+
+In another PowerShell window:
+
+```powershell
+$env:PORT = "5173"
+pnpm --filter @workspace/matsetu run dev
+```
+
+Open `http://localhost:5173`. The Vite dev server forwards `/api` requests to the API. The API uses the in-memory preview store unless `MONGODB_URI` is configured.
